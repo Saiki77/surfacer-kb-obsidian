@@ -1,0 +1,565 @@
+import { App, Notice, TFile, TFolder, normalizePath } from "obsidian";
+import type { KBSyncSettings } from "../settings";
+import { ManifestManager, type SyncFileEntry } from "./manifest-manager";
+import {
+  detectChanges,
+  type LocalFileInfo,
+  type RemoteFileInfo,
+} from "./change-detector";
+import { OfflineQueue } from "./offline-queue";
+import { resolveConflict } from "./conflict-resolver";
+import * as s3 from "../aws/s3-client";
+import { hashContent } from "../utils/hashing";
+import {
+  parseFrontmatter,
+  metadataToS3Headers,
+} from "../utils/metadata";
+import type { ActivityEntry } from "../ui/sidebar-view";
+
+export type SyncStatus =
+  | "idle"
+  | "pulling"
+  | "pushing"
+  | "offline"
+  | "error";
+
+export class SyncEngine {
+  private app: App;
+  private settings: KBSyncSettings;
+  private manifest: ManifestManager;
+  private queue: OfflineQueue;
+  private locked = false;
+  private _status: SyncStatus = "idle";
+  private _conflictCount = 0;
+  private onStatusChange: (status: SyncStatus, conflicts: number) => void;
+  private onActivity: (entry: ActivityEntry) => void;
+
+  constructor(
+    app: App,
+    settings: KBSyncSettings,
+    manifestData: any,
+    queueData: any,
+    onStatusChange: (status: SyncStatus, conflicts: number) => void,
+    onActivity: (entry: ActivityEntry) => void = () => {}
+  ) {
+    this.app = app;
+    this.settings = settings;
+    this.manifest = new ManifestManager(manifestData?.manifest);
+    this.queue = new OfflineQueue();
+    if (queueData?.queue) this.queue.load(queueData.queue);
+    this.onStatusChange = onStatusChange;
+    this.onActivity = onActivity;
+  }
+
+  private logActivity(
+    action: ActivityEntry["action"],
+    path: string,
+    detail?: string
+  ): void {
+    this.onActivity({
+      timestamp: new Date().toISOString(),
+      action,
+      path,
+      detail,
+    });
+  }
+
+  get status(): SyncStatus {
+    return this._status;
+  }
+
+  get conflictCount(): number {
+    return this._conflictCount;
+  }
+
+  get queueLength(): number {
+    return this.queue.length;
+  }
+
+  getManifestData(): any {
+    return { manifest: this.manifest.toJSON(), queue: this.queue.toJSON() };
+  }
+
+  updateSettings(settings: KBSyncSettings): void {
+    this.settings = settings;
+  }
+
+  private setStatus(status: SyncStatus): void {
+    this._status = status;
+    this.onStatusChange(status, this._conflictCount);
+  }
+
+  private async acquireLock(): Promise<boolean> {
+    if (this.locked) return false;
+    this.locked = true;
+    return true;
+  }
+
+  private releaseLock(): void {
+    this.locked = false;
+  }
+
+  private syncFolderPath(): string {
+    return normalizePath(this.settings.syncFolderPath);
+  }
+
+  private async ensureSyncFolder(): Promise<void> {
+    const folderPath = this.syncFolderPath();
+    const folder = this.app.vault.getAbstractFileByPath(folderPath);
+    if (!folder) {
+      await this.app.vault.createFolder(folderPath);
+    }
+  }
+
+  private async getLocalFiles(): Promise<Map<string, LocalFileInfo>> {
+    const map = new Map<string, LocalFileInfo>();
+    const folderPath = this.syncFolderPath();
+    const folder = this.app.vault.getAbstractFileByPath(folderPath);
+    if (!folder || !(folder instanceof TFolder)) return map;
+
+    const files = this.app.vault.getMarkdownFiles().filter((f) =>
+      f.path.startsWith(folderPath + "/")
+    );
+
+    for (const file of files) {
+      const relativePath = file.path.slice(folderPath.length + 1);
+      const content = await this.app.vault.read(file);
+      map.set(relativePath, {
+        relativePath,
+        contentHash: hashContent(content),
+        mtime: new Date(file.stat.mtime).toISOString(),
+      });
+    }
+
+    return map;
+  }
+
+  private async getRemoteFiles(): Promise<Map<string, RemoteFileInfo>> {
+    const map = new Map<string, RemoteFileInfo>();
+    const items = await s3.listAllObjects(this.settings);
+    for (const item of items) {
+      if (item.key.endsWith(".md")) {
+        map.set(item.key, {
+          relativePath: item.key,
+          lastModified: item.lastModified,
+          size: item.size,
+        });
+      }
+    }
+    return map;
+  }
+
+  private vaultPath(relativePath: string): string {
+    return normalizePath(`${this.syncFolderPath()}/${relativePath}`);
+  }
+
+  private async writeLocalFile(
+    relativePath: string,
+    content: string
+  ): Promise<void> {
+    const fullPath = this.vaultPath(relativePath);
+
+    // Ensure parent folders exist
+    const parts = fullPath.split("/");
+    parts.pop();
+    if (parts.length > 0) {
+      const parentPath = parts.join("/");
+      const parent = this.app.vault.getAbstractFileByPath(parentPath);
+      if (!parent) {
+        await this.app.vault.createFolder(parentPath);
+      }
+    }
+
+    const existing = this.app.vault.getAbstractFileByPath(fullPath);
+    if (existing instanceof TFile) {
+      await this.app.vault.modify(existing, content);
+    } else {
+      await this.app.vault.create(fullPath, content);
+    }
+  }
+
+  private async readLocalFile(relativePath: string): Promise<string | null> {
+    const fullPath = this.vaultPath(relativePath);
+    const file = this.app.vault.getAbstractFileByPath(fullPath);
+    if (file instanceof TFile) {
+      return await this.app.vault.read(file);
+    }
+    return null;
+  }
+
+  private async deleteLocalFile(relativePath: string): Promise<void> {
+    const fullPath = this.vaultPath(relativePath);
+    const file = this.app.vault.getAbstractFileByPath(fullPath);
+    if (file instanceof TFile) {
+      await this.app.vault.delete(file);
+    }
+  }
+
+  private async pushToS3(
+    path: string,
+    content: string
+  ): Promise<void> {
+    const { metadata } = parseFrontmatter(content);
+    await s3.putObject(
+      this.settings,
+      path,
+      content,
+      metadataToS3Headers(metadata)
+    );
+  }
+
+  private makeSyncedEntry(
+    relativePath: string,
+    contentHash: string,
+    remoteLastModified: string
+  ): SyncFileEntry {
+    const now = new Date().toISOString();
+    return {
+      relativePath,
+      baseContentHash: contentHash,
+      baseModifiedTime: now,
+      remoteLastModified,
+      remoteContentHash: contentHash,
+      localLastModified: now,
+      localContentHash: contentHash,
+      syncState: "synced",
+    };
+  }
+
+  async pull(): Promise<void> {
+    if (!this.settings.syncEnabled) return;
+    if (!(await this.acquireLock())) return;
+
+    try {
+      this.setStatus("pulling");
+
+      const online = await s3.checkConnectivity(this.settings);
+      if (!online) {
+        this.setStatus("offline");
+        return;
+      }
+
+      await this.ensureSyncFolder();
+
+      // Drain offline queue first
+      await this.drainQueue();
+
+      const localFiles = await this.getLocalFiles();
+      const remoteFiles = await this.getRemoteFiles();
+      const plan = detectChanges(
+        this.manifest.toJSON(),
+        localFiles,
+        remoteFiles
+      );
+
+      // Pull: remote changed, local didn't
+      for (const path of plan.pull) {
+        const { body } = await s3.getObject(this.settings, path);
+        await this.writeLocalFile(path, body);
+        const remote = remoteFiles.get(path)!;
+        this.manifest.setEntry(
+          path,
+          this.makeSyncedEntry(path, hashContent(body), remote.lastModified)
+        );
+        this.logActivity("pull", path, "Updated from remote");
+      }
+
+      // New remote files
+      for (const path of plan.newRemote) {
+        const { body } = await s3.getObject(this.settings, path);
+        await this.writeLocalFile(path, body);
+        const remote = remoteFiles.get(path)!;
+        this.manifest.setEntry(
+          path,
+          this.makeSyncedEntry(path, hashContent(body), remote.lastModified)
+        );
+        this.logActivity("pull", path, "New file from remote");
+      }
+
+      // Deleted from remote, local unchanged
+      for (const path of plan.deletedRemote) {
+        await this.deleteLocalFile(path);
+        this.manifest.removeEntry(path);
+        this.logActivity("delete", path, "Deleted (removed from remote)");
+      }
+
+      // Conflicts
+      this._conflictCount = 0;
+      for (const path of plan.conflicts) {
+        await this.handleConflict(path, localFiles, remoteFiles);
+      }
+
+      // Clean up entries for files deleted from both sides
+      for (const path of plan.unchanged) {
+        if (!localFiles.has(path) && !remoteFiles.has(path)) {
+          this.manifest.removeEntry(path);
+        }
+      }
+
+      this.manifest.setLastPull(new Date().toISOString());
+      this.setStatus("idle");
+
+      if (plan.pull.length + plan.newRemote.length > 0) {
+        new Notice(
+          `KB Sync: Pulled ${plan.pull.length + plan.newRemote.length} file(s)`
+        );
+      }
+    } catch (err) {
+      console.error("KB Sync pull error:", err);
+      this.setStatus("error");
+      new Notice(`KB Sync error: ${(err as Error).message}`);
+    } finally {
+      this.releaseLock();
+    }
+  }
+
+  async push(): Promise<void> {
+    if (!this.settings.syncEnabled) return;
+    if (!(await this.acquireLock())) return;
+
+    try {
+      this.setStatus("pushing");
+
+      const online = await s3.checkConnectivity(this.settings);
+      if (!online) {
+        // Queue local changes for later
+        const localFiles = await this.getLocalFiles();
+        for (const [path, info] of localFiles) {
+          const entry = this.manifest.getEntry(path);
+          if (!entry || info.contentHash !== entry.baseContentHash) {
+            this.queue.enqueue({
+              type: "push",
+              relativePath: path,
+              contentHash: info.contentHash,
+            });
+            this.logActivity("offline", path, "Queued for push when online");
+          }
+        }
+        this.setStatus("offline");
+        return;
+      }
+
+      await this.ensureSyncFolder();
+      await this.drainQueue();
+
+      const localFiles = await this.getLocalFiles();
+      const remoteFiles = await this.getRemoteFiles();
+      const plan = detectChanges(
+        this.manifest.toJSON(),
+        localFiles,
+        remoteFiles
+      );
+
+      // Push: local changed, remote didn't
+      for (const path of plan.push) {
+        const content = await this.readLocalFile(path);
+        if (!content) continue;
+        await this.pushToS3(path, content);
+        this.manifest.setEntry(
+          path,
+          this.makeSyncedEntry(
+            path,
+            hashContent(content),
+            new Date().toISOString()
+          )
+        );
+        this.logActivity("push", path, "Uploaded to remote");
+      }
+
+      // New local files
+      for (const path of plan.newLocal) {
+        const content = await this.readLocalFile(path);
+        if (!content) continue;
+        await this.pushToS3(path, content);
+        this.manifest.setEntry(
+          path,
+          this.makeSyncedEntry(
+            path,
+            hashContent(content),
+            new Date().toISOString()
+          )
+        );
+        this.logActivity("push", path, "New file uploaded");
+      }
+
+      // Locally deleted files
+      for (const path of plan.deletedLocal) {
+        await s3.deleteObject(this.settings, path);
+        this.manifest.removeEntry(path);
+        this.logActivity("delete", path, "Deleted from remote");
+      }
+
+      this.manifest.setLastPush(new Date().toISOString());
+      this.setStatus("idle");
+
+      const pushed = plan.push.length + plan.newLocal.length;
+      if (pushed > 0) {
+        new Notice(`KB Sync: Pushed ${pushed} file(s)`);
+      }
+    } catch (err) {
+      console.error("KB Sync push error:", err);
+      this.setStatus("error");
+      new Notice(`KB Sync error: ${(err as Error).message}`);
+    } finally {
+      this.releaseLock();
+    }
+  }
+
+  private async handleConflict(
+    path: string,
+    localFiles: Map<string, LocalFileInfo>,
+    remoteFiles: Map<string, RemoteFileInfo>
+  ): Promise<void> {
+    const local = localFiles.get(path);
+    const remote = remoteFiles.get(path);
+
+    const localContent = local
+      ? (await this.readLocalFile(path)) || ""
+      : "";
+    const remoteContent = remote
+      ? (await s3.getObject(this.settings, path)).body
+      : "";
+
+    // Check if both sides converged to the same content
+    if (
+      localContent &&
+      remoteContent &&
+      hashContent(localContent) === hashContent(remoteContent)
+    ) {
+      // Converged — just update manifest
+      this.manifest.setEntry(
+        path,
+        this.makeSyncedEntry(
+          path,
+          hashContent(localContent),
+          remote?.lastModified || new Date().toISOString()
+        )
+      );
+      return;
+    }
+
+    // Handle delete/modify conflicts
+    if (!localContent && remoteContent) {
+      // Locally deleted, remotely modified
+      const result = await resolveConflict(
+        this.app,
+        this.settings,
+        path,
+        "(file deleted locally)",
+        remoteContent
+      );
+      if (result.action === "keep-remote" || result.action === "merged") {
+        await this.writeLocalFile(path, result.content);
+        this.manifest.setEntry(
+          path,
+          this.makeSyncedEntry(
+            path,
+            hashContent(result.content),
+            remote?.lastModified || new Date().toISOString()
+          )
+        );
+      } else {
+        await s3.deleteObject(this.settings, path);
+        this.manifest.removeEntry(path);
+      }
+      return;
+    }
+
+    if (localContent && !remoteContent) {
+      // Remotely deleted, locally modified
+      const result = await resolveConflict(
+        this.app,
+        this.settings,
+        path,
+        localContent,
+        "(file deleted remotely)"
+      );
+      if (result.action === "keep-local" || result.action === "merged") {
+        const { metadata } = parseFrontmatter(result.content);
+        await s3.putObject(
+          this.settings,
+          path,
+          result.content,
+          metadataToS3Headers(metadata)
+        );
+        this.manifest.setEntry(
+          path,
+          this.makeSyncedEntry(
+            path,
+            hashContent(result.content),
+            new Date().toISOString()
+          )
+        );
+      } else {
+        await this.deleteLocalFile(path);
+        this.manifest.removeEntry(path);
+      }
+      return;
+    }
+
+    // Both modified — true conflict
+    this._conflictCount++;
+    const result = await resolveConflict(
+      this.app,
+      this.settings,
+      path,
+      localContent,
+      remoteContent
+    );
+
+    // Write winner to both sides
+    await this.writeLocalFile(path, result.content);
+    const { metadata } = parseFrontmatter(result.content);
+    await s3.putObject(
+      this.settings,
+      path,
+      result.content,
+      metadataToS3Headers(metadata)
+    );
+    this.manifest.setEntry(
+      path,
+      this.makeSyncedEntry(
+        path,
+        hashContent(result.content),
+        new Date().toISOString()
+      )
+    );
+    this.logActivity("conflict", path, `Resolved: ${result.action}`);
+  }
+
+  private async drainQueue(): Promise<void> {
+    if (this.queue.isEmpty) return;
+
+    const ops = this.queue.drain();
+    for (const op of ops) {
+      try {
+        if (op.type === "push") {
+          const content = await this.readLocalFile(op.relativePath);
+          if (content) {
+            await this.pushToS3(op.relativePath, content);
+            this.manifest.setEntry(
+              op.relativePath,
+              this.makeSyncedEntry(
+                op.relativePath,
+                hashContent(content),
+                new Date().toISOString()
+              )
+            );
+          }
+        } else if (op.type === "delete-remote") {
+          await s3.deleteObject(this.settings, op.relativePath);
+          this.manifest.removeEntry(op.relativePath);
+        }
+      } catch (err) {
+        console.error(`KB Sync queue drain error for ${op.relativePath}:`, err);
+        // Re-queue failed operations
+        this.queue.enqueue(op);
+      }
+    }
+  }
+
+  async forceSync(): Promise<void> {
+    await this.pull();
+    await this.push();
+  }
+}

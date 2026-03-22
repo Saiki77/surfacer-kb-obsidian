@@ -135,8 +135,8 @@ export default class KBSyncPlugin extends Plugin {
     });
   }
 
-  async forcePull(): Promise<void> {
-    await this.syncEngine.pull();
+  async forceSync(): Promise<void> {
+    await this.syncEngine.forceSync();
     await this.persistSyncData();
     if (this.sidebarView) {
       this.sidebarView.refreshRemoteFiles();

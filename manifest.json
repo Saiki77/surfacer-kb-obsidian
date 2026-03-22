@@ -1,7 +1,7 @@
 {
   "id": "kb-s3-sync",
   "name": "Knowledge Base S3 Sync",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "minAppVersion": "1.0.0",
   "description": "Bidirectional sync between your Obsidian vault and an S3-backed knowledge base with conflict resolution",
   "author": "Surfacer",

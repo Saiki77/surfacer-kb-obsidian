@@ -59,6 +59,8 @@ export class KBSyncSidebarView extends ItemView {
   private activeTab: TabName = "files";
   private maxActivityEntries = 200;
   private maxChatMessages = 100;
+  private chatInputValue = "";
+  private chatInputCursor = 0;
 
   constructor(leaf: WorkspaceLeaf, plugin: KBSyncPlugin) {
     super(leaf);
@@ -184,6 +186,11 @@ export class KBSyncSidebarView extends ItemView {
         this.chatMessages = this.chatMessages.slice(-this.maxChatMessages);
       }
       if (this.activeTab === "chat") {
+        // Don't re-render if user is actively typing
+        const activeEl = document.activeElement;
+        if (activeEl?.classList.contains("kb-sync-chat-input")) {
+          return;
+        }
         this.render();
       }
     } catch { /* silently fail */ }
@@ -267,20 +274,20 @@ export class KBSyncSidebarView extends ItemView {
     // Tab bar
     const tabBar = contentEl.createDiv({ cls: "kb-sync-tab-bar" });
 
-    // Pull button
-    const pullBtn = tabBar.createEl("button", {
+    // Sync button (pull + push)
+    const syncBtn = tabBar.createEl("button", {
       cls: "kb-sync-pull-btn",
-      attr: { "aria-label": "Pull from S3" },
+      attr: { "aria-label": "Sync now" },
     });
-    setIcon(pullBtn, "download");
-    pullBtn.addEventListener("click", async () => {
-      pullBtn.addClass("kb-sync-pull-btn-spinning");
-      pullBtn.setAttribute("disabled", "true");
+    setIcon(syncBtn, "refresh-cw");
+    syncBtn.addEventListener("click", async () => {
+      syncBtn.addClass("kb-sync-pull-btn-spinning");
+      syncBtn.setAttribute("disabled", "true");
       try {
-        await this.plugin.forcePull();
+        await this.plugin.forceSync();
       } finally {
-        pullBtn.removeClass("kb-sync-pull-btn-spinning");
-        pullBtn.removeAttribute("disabled");
+        syncBtn.removeClass("kb-sync-pull-btn-spinning");
+        syncBtn.removeAttribute("disabled");
       }
     });
 
@@ -323,7 +330,13 @@ export class KBSyncSidebarView extends ItemView {
         if (tab.id === "files") this.refreshRemoteFiles();
         if (tab.id === "team") this.refreshPresence();
         if (tab.id === "handoffs") this.refreshHandoffs();
-        if (tab.id === "chat") this.refreshChat();
+        if (tab.id === "chat") {
+          this.refreshChat();
+          // Ensure file list is loaded for ! autocomplete
+          if (this.remoteFiles.length === 0) this.refreshRemoteFiles();
+          // Ensure presence is loaded for @ autocomplete
+          if (this.teamPresence.length === 0) this.refreshPresence();
+        }
       });
     }
 
@@ -690,6 +703,13 @@ export class KBSyncSidebarView extends ItemView {
       cls: "kb-sync-chat-input",
       attr: { placeholder: "Type a message... (! for files, @ for people)", type: "text" },
     });
+    // Restore saved input value
+    if (this.chatInputValue) {
+      input.value = this.chatInputValue;
+      setTimeout(() => {
+        input.setSelectionRange(this.chatInputCursor, this.chatInputCursor);
+      }, 0);
+    }
     const sendBtn = inputBar.createEl("button", { cls: "kb-sync-chat-send-btn" });
     setIcon(sendBtn, "send");
 
@@ -791,8 +811,14 @@ export class KBSyncSidebarView extends ItemView {
       renderAutocomplete();
     };
 
-    input.addEventListener("input", updateAutocomplete);
+    input.addEventListener("input", () => {
+      this.chatInputValue = input.value;
+      this.chatInputCursor = input.selectionStart || 0;
+      updateAutocomplete();
+    });
     input.addEventListener("blur", () => {
+      this.chatInputValue = input.value;
+      this.chatInputCursor = input.selectionStart || 0;
       // Delay to allow mousedown on autocomplete items
       setTimeout(closeAutocomplete, 150);
     });
@@ -802,6 +828,8 @@ export class KBSyncSidebarView extends ItemView {
       if (!text.trim()) return;
       closeAutocomplete();
       input.value = "";
+      this.chatInputValue = "";
+      this.chatInputCursor = 0;
       await this.sendChatMessage(text);
     };
 

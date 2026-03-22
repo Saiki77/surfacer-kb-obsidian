@@ -825,3 +825,115 @@
 .kb-sync-chat-send-btn:hover {
   opacity: 0.9;
 }
+
+/* Chat input wrapper (contains autocomplete + input bar) */
+.kb-sync-chat-input-wrapper {
+  position: relative;
+}
+
+/* Autocomplete dropdown */
+.kb-sync-chat-autocomplete {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  right: 0;
+  max-height: 200px;
+  overflow-y: auto;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  margin-bottom: 4px;
+  box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.12);
+  z-index: 10;
+}
+
+.theme-dark .kb-sync-chat-autocomplete {
+  box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.kb-sync-chat-ac-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--text-normal);
+}
+
+.kb-sync-chat-ac-item:hover,
+.kb-sync-chat-ac-item-active {
+  background: var(--background-modifier-hover);
+}
+
+.kb-sync-chat-ac-item-active {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.kb-sync-chat-ac-item-active .kb-sync-tree-icon {
+  color: var(--text-on-accent);
+}
+
+/* File mention in chat message */
+.kb-sync-chat-mention-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: var(--interactive-accent);
+  cursor: pointer;
+  font-weight: 500;
+  padding: 0 2px;
+  border-radius: 3px;
+}
+
+.kb-sync-chat-mention-file:hover {
+  text-decoration: underline;
+  background: rgba(var(--interactive-accent-rgb), 0.1);
+}
+
+.kb-sync-chat-mention-file .kb-sync-tree-icon {
+  width: 14px;
+  height: 14px;
+  color: inherit;
+}
+
+/* Make file mentions visible in own (colored) bubbles */
+.kb-sync-chat-bubble-own .kb-sync-chat-mention-file {
+  color: #fff;
+  opacity: 0.95;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+}
+
+.kb-sync-chat-bubble-own .kb-sync-chat-mention-file:hover {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.15);
+}
+
+/* User mention in chat message */
+.kb-sync-chat-mention-user {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-weight: 600;
+  padding: 0 2px;
+}
+
+.kb-sync-chat-mention-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: inline-block;
+}
+
+/* Make user mentions visible in own (colored) bubbles */
+.kb-sync-chat-bubble-own .kb-sync-chat-mention-user {
+  color: #fff;
+}
+
+.kb-sync-chat-bubble-own .kb-sync-chat-mention-dot {
+  background: #fff !important;
+  opacity: 0.7;
+}

@@ -668,7 +668,7 @@ export class KBSyncSidebarView extends ItemView {
         const bubbleEl = msgEl.createDiv({
           cls: `kb-sync-chat-bubble ${isOwn ? `kb-sync-chat-bubble-own kb-sync-chat-own-${colorIdx}` : ""}`,
         });
-        bubbleEl.setText(msg.text);
+        this.renderMessageContent(bubbleEl, msg.text);
 
         const timeEl = msgEl.createDiv({ cls: "kb-sync-chat-msg-time" });
         timeEl.setText(this.formatTimeShort(msg.timestamp));
@@ -680,26 +680,187 @@ export class KBSyncSidebarView extends ItemView {
       messagesEl.scrollTop = messagesEl.scrollHeight;
     }, 0);
 
-    // Input area
-    const inputBar = chatContainer.createDiv({ cls: "kb-sync-chat-input-bar" });
+    // Input area with autocomplete
+    const inputWrapper = chatContainer.createDiv({ cls: "kb-sync-chat-input-wrapper" });
+    const autocompleteEl = inputWrapper.createDiv({ cls: "kb-sync-chat-autocomplete" });
+    autocompleteEl.style.display = "none";
+
+    const inputBar = inputWrapper.createDiv({ cls: "kb-sync-chat-input-bar" });
     const input = inputBar.createEl("input", {
       cls: "kb-sync-chat-input",
-      attr: { placeholder: "Type a message...", type: "text" },
+      attr: { placeholder: "Type a message... (! for files, @ for people)", type: "text" },
     });
     const sendBtn = inputBar.createEl("button", { cls: "kb-sync-chat-send-btn" });
     setIcon(sendBtn, "send");
 
+    let acItems: { label: string; value: string; icon: string }[] = [];
+    let acIndex = 0;
+    let acTrigger: { type: "file" | "user"; start: number } | null = null;
+
+    const closeAutocomplete = () => {
+      autocompleteEl.style.display = "none";
+      autocompleteEl.empty();
+      acTrigger = null;
+      acItems = [];
+      acIndex = 0;
+    };
+
+    const renderAutocomplete = () => {
+      autocompleteEl.empty();
+      if (acItems.length === 0) {
+        closeAutocomplete();
+        return;
+      }
+      autocompleteEl.style.display = "block";
+      for (let i = 0; i < acItems.length; i++) {
+        const item = acItems[i];
+        const row = autocompleteEl.createDiv({
+          cls: `kb-sync-chat-ac-item${i === acIndex ? " kb-sync-chat-ac-item-active" : ""}`,
+        });
+        const iconEl = row.createSpan({ cls: "kb-sync-tree-icon" });
+        setIcon(iconEl, item.icon);
+        row.createSpan({ text: item.label });
+        row.addEventListener("mousedown", (e) => {
+          e.preventDefault();
+          selectAutocomplete(i);
+        });
+      }
+    };
+
+    const selectAutocomplete = (index: number) => {
+      if (!acTrigger || index < 0 || index >= acItems.length) return;
+      const item = acItems[index];
+      const val = input.value;
+      const before = val.slice(0, acTrigger.start);
+      const triggerChar = acTrigger.type === "file" ? "!" : "@";
+      const after = val.slice(input.selectionStart || val.length);
+      input.value = `${before}${triggerChar}${item.value} ${after}`;
+      const cursorPos = before.length + triggerChar.length + item.value.length + 1;
+      input.setSelectionRange(cursorPos, cursorPos);
+      input.focus();
+      closeAutocomplete();
+    };
+
+    const updateAutocomplete = () => {
+      const val = input.value;
+      const cursor = input.selectionStart || val.length;
+
+      // Scan backwards from cursor to find a trigger
+      let triggerPos = -1;
+      let triggerType: "file" | "user" | null = null;
+      for (let i = cursor - 1; i >= 0; i--) {
+        if (val[i] === " " || val[i] === "\t") break;
+        if (val[i] === "!" && (i === 0 || val[i - 1] === " ")) {
+          triggerPos = i;
+          triggerType = "file";
+          break;
+        }
+        if (val[i] === "@" && (i === 0 || val[i - 1] === " ")) {
+          triggerPos = i;
+          triggerType = "user";
+          break;
+        }
+      }
+
+      if (triggerPos < 0 || !triggerType) {
+        closeAutocomplete();
+        return;
+      }
+
+      const query = val.slice(triggerPos + 1, cursor).toLowerCase();
+      acTrigger = { type: triggerType, start: triggerPos };
+
+      if (triggerType === "file") {
+        acItems = this.remoteFiles
+          .filter((f) => f.key.toLowerCase().includes(query))
+          .slice(0, 8)
+          .map((f) => ({ label: f.key, value: f.key, icon: "file-text" }));
+      } else {
+        const seen = new Set<string>();
+        acItems = this.teamPresence
+          .filter((p) => {
+            if (seen.has(p.user)) return false;
+            seen.add(p.user);
+            return p.user.toLowerCase().includes(query);
+          })
+          .slice(0, 8)
+          .map((p) => ({ label: p.user, value: p.user, icon: "user" }));
+      }
+
+      acIndex = 0;
+      renderAutocomplete();
+    };
+
+    input.addEventListener("input", updateAutocomplete);
+    input.addEventListener("blur", () => {
+      // Delay to allow mousedown on autocomplete items
+      setTimeout(closeAutocomplete, 150);
+    });
+
     const doSend = async () => {
       const text = input.value;
       if (!text.trim()) return;
+      closeAutocomplete();
       input.value = "";
       await this.sendChatMessage(text);
     };
 
     sendBtn.addEventListener("click", doSend);
     input.addEventListener("keydown", (e) => {
+      if (acTrigger && acItems.length > 0) {
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          acIndex = (acIndex + 1) % acItems.length;
+          renderAutocomplete();
+          return;
+        }
+        if (e.key === "ArrowUp") {
+          e.preventDefault();
+          acIndex = (acIndex - 1 + acItems.length) % acItems.length;
+          renderAutocomplete();
+          return;
+        }
+        if (e.key === "Tab" || (e.key === "Enter" && acItems.length > 0)) {
+          e.preventDefault();
+          selectAutocomplete(acIndex);
+          return;
+        }
+        if (e.key === "Escape") {
+          e.preventDefault();
+          closeAutocomplete();
+          return;
+        }
+      }
       if (e.key === "Enter") doSend();
     });
+  }
+
+  private renderMessageContent(container: HTMLElement, text: string): void {
+    // Split on !file/path and @username mentions
+    const parts = text.split(/(![^\s]+|@\w+)/g);
+    for (const part of parts) {
+      if (part.startsWith("!") && part.length > 1) {
+        const filePath = part.slice(1);
+        const span = container.createSpan({ cls: "kb-sync-chat-mention-file" });
+        const iconEl = span.createSpan({ cls: "kb-sync-tree-icon" });
+        setIcon(iconEl, "file-text");
+        span.createSpan({ text: filePath });
+        span.addEventListener("click", (e) => {
+          e.stopPropagation();
+          this.app.workspace.openLinkText(
+            `${this.plugin.settings.syncFolderPath}/${filePath}`, "", false
+          );
+        });
+      } else if (part.startsWith("@") && part.length > 1) {
+        const userName = part.slice(1);
+        const colorIdx = this.hashUserColor(userName);
+        const span = container.createSpan({ cls: "kb-sync-chat-mention-user" });
+        span.createSpan({ cls: `kb-sync-chat-mention-dot kb-sync-dot-color-${colorIdx}` });
+        span.createSpan({ text: part });
+      } else if (part) {
+        container.appendText(part);
+      }
+    }
   }
 
   // ── Handoffs Tab ───────────────────────────────────────

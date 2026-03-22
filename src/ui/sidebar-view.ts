@@ -18,6 +18,14 @@ export interface PresenceEntry {
   workingOn: string;
   openDocs: string[];
   status: "active" | "idle";
+  statusMessage?: string;
+}
+
+export interface ChatMessage {
+  id: string;
+  user: string;
+  text: string;
+  timestamp: string;
 }
 
 export interface Handoff {
@@ -39,7 +47,7 @@ export interface Handoff {
   completionNotes: string | null;
 }
 
-type TabName = "files" | "activity" | "team" | "handoffs";
+type TabName = "files" | "activity" | "team" | "handoffs" | "chat";
 
 export class KBSyncSidebarView extends ItemView {
   private plugin: KBSyncPlugin;
@@ -47,8 +55,10 @@ export class KBSyncSidebarView extends ItemView {
   private activityLog: ActivityEntry[] = [];
   private teamPresence: PresenceEntry[] = [];
   private handoffs: Handoff[] = [];
+  private chatMessages: ChatMessage[] = [];
   private activeTab: TabName = "files";
   private maxActivityEntries = 200;
+  private maxChatMessages = 100;
 
   constructor(leaf: WorkspaceLeaf, plugin: KBSyncPlugin) {
     super(leaf);
@@ -106,7 +116,7 @@ export class KBSyncSidebarView extends ItemView {
       this.remoteFiles = await s3.listAllObjects(this.plugin.settings);
       // Filter out operational prefixes
       this.remoteFiles = this.remoteFiles.filter(
-        (f) => !f.key.startsWith("_handoffs/") && !f.key.startsWith("_presence/")
+        (f) => !f.key.startsWith("_handoffs/") && !f.key.startsWith("_presence/") && !f.key.startsWith("_chat/")
       );
       this.remoteFiles.sort((a, b) => a.key.localeCompare(b.key));
       if (this.activeTab === "files") {
@@ -155,6 +165,56 @@ export class KBSyncSidebarView extends ItemView {
     } catch { /* silently fail */ }
   }
 
+  async refreshChat(): Promise<void> {
+    try {
+      const items = await s3.listObjects(this.plugin.settings, "_chat/", 200);
+      const messages: ChatMessage[] = [];
+      for (const item of items) {
+        if (!item.key.endsWith(".json")) continue;
+        try {
+          const { body } = await s3.getObject(this.plugin.settings, item.key);
+          messages.push(JSON.parse(body));
+        } catch { /* skip */ }
+      }
+      this.chatMessages = messages.sort(
+        (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+      );
+      // Keep only recent messages
+      if (this.chatMessages.length > this.maxChatMessages) {
+        this.chatMessages = this.chatMessages.slice(-this.maxChatMessages);
+      }
+      if (this.activeTab === "chat") {
+        this.render();
+      }
+    } catch { /* silently fail */ }
+  }
+
+  async sendChatMessage(text: string): Promise<void> {
+    const userName = this.plugin.settings.userName;
+    if (!userName || !text.trim()) return;
+
+    const msg: ChatMessage = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      user: userName,
+      text: text.trim(),
+      timestamp: new Date().toISOString(),
+    };
+
+    try {
+      await s3.putObject(
+        this.plugin.settings,
+        `_chat/${msg.id}.json`,
+        JSON.stringify(msg, null, 2),
+        {},
+        "application/json"
+      );
+      this.chatMessages.push(msg);
+      if (this.activeTab === "chat") {
+        this.render();
+      }
+    } catch { /* silently fail */ }
+  }
+
   async updatePresence(): Promise<void> {
     const userName = this.plugin.settings.userName;
     if (!userName) return;
@@ -168,6 +228,7 @@ export class KBSyncSidebarView extends ItemView {
         workingOn: activeTab?.path || "",
         openDocs: tabs.map((t) => t.path),
         status: "active",
+        statusMessage: this.plugin.settings.statusMessage || undefined,
       };
       await s3.putObject(
         this.plugin.settings,
@@ -206,9 +267,27 @@ export class KBSyncSidebarView extends ItemView {
     // Tab bar
     const tabBar = contentEl.createDiv({ cls: "kb-sync-tab-bar" });
 
+    // Pull button
+    const pullBtn = tabBar.createEl("button", {
+      cls: "kb-sync-pull-btn",
+      attr: { "aria-label": "Pull from S3" },
+    });
+    setIcon(pullBtn, "download");
+    pullBtn.addEventListener("click", async () => {
+      pullBtn.addClass("kb-sync-pull-btn-spinning");
+      pullBtn.setAttribute("disabled", "true");
+      try {
+        await this.plugin.forcePull();
+      } finally {
+        pullBtn.removeClass("kb-sync-pull-btn-spinning");
+        pullBtn.removeAttribute("disabled");
+      }
+    });
+
     const tabs: { id: TabName; label: string }[] = [
       { id: "files", label: "Files" },
       { id: "team", label: "Team" },
+      { id: "chat", label: "Chat" },
       { id: "handoffs", label: "Handoffs" },
       { id: "activity", label: "Activity" },
     ];
@@ -244,6 +323,7 @@ export class KBSyncSidebarView extends ItemView {
         if (tab.id === "files") this.refreshRemoteFiles();
         if (tab.id === "team") this.refreshPresence();
         if (tab.id === "handoffs") this.refreshHandoffs();
+        if (tab.id === "chat") this.refreshChat();
       });
     }
 
@@ -255,6 +335,7 @@ export class KBSyncSidebarView extends ItemView {
       case "activity": this.renderActivity(body); break;
       case "team": this.renderTeam(body); break;
       case "handoffs": this.renderHandoffs(body); break;
+      case "chat": this.renderChat(body); break;
     }
   }
 
@@ -373,6 +454,32 @@ export class KBSyncSidebarView extends ItemView {
       return;
     }
 
+    // Status update input
+    const statusBar = container.createDiv({ cls: "kb-sync-status-input-bar" });
+    const statusInput = statusBar.createEl("input", {
+      cls: "kb-sync-status-input",
+      attr: { placeholder: "Set your status...", type: "text" },
+    });
+    statusInput.value = this.plugin.settings.statusMessage || "";
+    const statusBtn = statusBar.createEl("button", {
+      cls: "kb-sync-status-btn",
+      text: "Set",
+    });
+    statusBtn.addEventListener("click", async () => {
+      this.plugin.settings.statusMessage = statusInput.value;
+      await this.plugin.saveSettings();
+      await this.updatePresence();
+      await this.refreshPresence();
+    });
+    statusInput.addEventListener("keydown", async (e) => {
+      if (e.key === "Enter") {
+        this.plugin.settings.statusMessage = statusInput.value;
+        await this.plugin.saveSettings();
+        await this.updatePresence();
+        await this.refreshPresence();
+      }
+    });
+
     if (this.teamPresence.length === 0) {
       container.createDiv({
         cls: "kb-sync-empty",
@@ -382,28 +489,40 @@ export class KBSyncSidebarView extends ItemView {
     }
 
     const now = Date.now();
-    const ttl = 5 * 60 * 1000;
+    const activeTtl = 5 * 60 * 1000;
+    const offlineTtl = 30 * 60 * 1000;
     const active = this.teamPresence.filter(
-      (p) => now - new Date(p.heartbeat).getTime() < ttl
+      (p) => now - new Date(p.heartbeat).getTime() < activeTtl
     );
-    const stale = this.teamPresence.filter(
-      (p) => now - new Date(p.heartbeat).getTime() >= ttl
+    const recentlyActive = this.teamPresence.filter(
+      (p) => {
+        const age = now - new Date(p.heartbeat).getTime();
+        return age >= activeTtl && age < offlineTtl;
+      }
+    );
+    const offline = this.teamPresence.filter(
+      (p) => now - new Date(p.heartbeat).getTime() >= offlineTtl
     );
 
     const list = container.createDiv({ cls: "kb-sync-team-list" });
 
     if (active.length > 0) {
       for (const entry of active) {
-        this.renderPresenceCard(list, entry, true);
+        this.renderPresenceCard(list, entry, "active");
       }
     }
 
-    if (stale.length > 0) {
-      if (active.length > 0) {
-        list.createDiv({ cls: "kb-sync-team-divider", text: "Recently active" });
+    if (recentlyActive.length > 0) {
+      list.createDiv({ cls: "kb-sync-team-divider", text: "Recently active" });
+      for (const entry of recentlyActive) {
+        this.renderPresenceCard(list, entry, "away");
       }
-      for (const entry of stale) {
-        this.renderPresenceCard(list, entry, false);
+    }
+
+    if (offline.length > 0) {
+      list.createDiv({ cls: "kb-sync-team-divider", text: "Offline" });
+      for (const entry of offline) {
+        this.renderPresenceCard(list, entry, "offline");
       }
     }
   }
@@ -419,19 +538,39 @@ export class KBSyncSidebarView extends ItemView {
   private renderPresenceCard(
     container: HTMLElement,
     entry: PresenceEntry,
-    isActive: boolean
+    presenceState: "active" | "away" | "offline"
   ): void {
     const colorIdx = this.hashUserColor(entry.user);
     const card = container.createDiv({
-      cls: `kb-sync-presence-card kb-sync-pastel-${colorIdx}`,
+      cls: `kb-sync-presence-card kb-sync-pastel-${colorIdx}${presenceState === "offline" ? " kb-sync-presence-offline" : ""}`,
     });
 
     const header = card.createDiv({ cls: "kb-sync-presence-header" });
-    header.createSpan({
-      cls: `kb-sync-presence-dot ${isActive ? `kb-sync-dot-active kb-sync-dot-color-${colorIdx}` : "kb-sync-dot-stale"}`,
-    });
+
+    let dotCls: string;
+    if (presenceState === "active") {
+      dotCls = `kb-sync-presence-dot kb-sync-dot-active kb-sync-dot-color-${colorIdx}`;
+    } else if (presenceState === "away") {
+      dotCls = "kb-sync-presence-dot kb-sync-dot-stale";
+    } else {
+      dotCls = "kb-sync-presence-dot kb-sync-dot-offline";
+    }
+    header.createSpan({ cls: dotCls });
     header.createSpan({ text: entry.user, cls: "kb-sync-presence-name" });
-    header.createSpan({ text: this.formatTime(entry.heartbeat), cls: "kb-sync-presence-time" });
+    if (presenceState === "offline") {
+      header.createSpan({ text: "offline", cls: "kb-sync-presence-offline-label" });
+    } else {
+      header.createSpan({ text: this.formatTime(entry.heartbeat), cls: "kb-sync-presence-time" });
+    }
+
+    // Status message
+    if (entry.statusMessage) {
+      const statusEl = card.createDiv({ cls: "kb-sync-presence-status-msg" });
+      statusEl.setText(entry.statusMessage);
+    }
+
+    // Don't show file details for offline users
+    if (presenceState === "offline") return;
 
     // Working on (active file)
     if (entry.workingOn) {
@@ -466,6 +605,101 @@ export class KBSyncSidebarView extends ItemView {
         });
       }
     }
+  }
+
+  // ── Chat Tab ─────────────────────────────────────────
+
+  private renderChat(container: HTMLElement): void {
+    if (!this.plugin.settings.userName) {
+      container.createDiv({
+        cls: "kb-sync-empty",
+        text: "Set your name in settings to use team chat.",
+      });
+      return;
+    }
+
+    const chatContainer = container.createDiv({ cls: "kb-sync-chat-container" });
+
+    // Messages area
+    const messagesEl = chatContainer.createDiv({ cls: "kb-sync-chat-messages" });
+
+    if (this.chatMessages.length === 0) {
+      messagesEl.createDiv({
+        cls: "kb-sync-empty",
+        text: "No messages yet. Start the conversation!",
+      });
+    } else {
+      const currentUser = this.plugin.settings.userName;
+      let lastDate = "";
+
+      for (const msg of this.chatMessages) {
+        // Day separator
+        const msgDate = new Date(msg.timestamp).toDateString();
+        if (msgDate !== lastDate) {
+          lastDate = msgDate;
+          const now = new Date();
+          let dateLabel: string;
+          if (msgDate === now.toDateString()) {
+            dateLabel = "Today";
+          } else if (msgDate === new Date(now.getTime() - 86400000).toDateString()) {
+            dateLabel = "Yesterday";
+          } else {
+            dateLabel = new Date(msg.timestamp).toLocaleDateString(undefined, {
+              weekday: "short", month: "short", day: "numeric",
+            });
+          }
+          messagesEl.createDiv({ cls: "kb-sync-chat-day", text: dateLabel });
+        }
+
+        const isOwn = msg.user === currentUser;
+        const colorIdx = this.hashUserColor(msg.user);
+        const msgEl = messagesEl.createDiv({
+          cls: `kb-sync-chat-msg ${isOwn ? "kb-sync-chat-msg-own" : "kb-sync-chat-msg-other"}`,
+        });
+
+        if (!isOwn) {
+          const nameEl = msgEl.createDiv({ cls: "kb-sync-chat-msg-name" });
+          nameEl.createSpan({
+            cls: `kb-sync-chat-name-dot kb-sync-dot-color-${colorIdx}`,
+          });
+          nameEl.createSpan({ text: msg.user });
+        }
+
+        const bubbleEl = msgEl.createDiv({
+          cls: `kb-sync-chat-bubble ${isOwn ? `kb-sync-chat-bubble-own kb-sync-chat-own-${colorIdx}` : ""}`,
+        });
+        bubbleEl.setText(msg.text);
+
+        const timeEl = msgEl.createDiv({ cls: "kb-sync-chat-msg-time" });
+        timeEl.setText(this.formatTimeShort(msg.timestamp));
+      }
+    }
+
+    // Scroll to bottom
+    setTimeout(() => {
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }, 0);
+
+    // Input area
+    const inputBar = chatContainer.createDiv({ cls: "kb-sync-chat-input-bar" });
+    const input = inputBar.createEl("input", {
+      cls: "kb-sync-chat-input",
+      attr: { placeholder: "Type a message...", type: "text" },
+    });
+    const sendBtn = inputBar.createEl("button", { cls: "kb-sync-chat-send-btn" });
+    setIcon(sendBtn, "send");
+
+    const doSend = async () => {
+      const text = input.value;
+      if (!text.trim()) return;
+      input.value = "";
+      await this.sendChatMessage(text);
+    };
+
+    sendBtn.addEventListener("click", doSend);
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") doSend();
+    });
   }
 
   // ── Handoffs Tab ───────────────────────────────────────

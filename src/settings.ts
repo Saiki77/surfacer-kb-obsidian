@@ -16,12 +16,13 @@ export interface KBSyncSettings {
   syncEnabled: boolean;
   userName: string;
   presenceHeartbeatMinutes: number;
+  statusMessage: string;
 }
 
 export const DEFAULT_SETTINGS: KBSyncSettings = {
-  s3Bucket: "claude-unified-bucket",
+  s3Bucket: "",
   s3Prefix: "knowledge-base/",
-  awsRegion: "eu-central-1",
+  awsRegion: "us-east-1",
   awsProfile: "default",
   awsAccessKeyId: "",
   awsSecretAccessKey: "",
@@ -33,6 +34,7 @@ export const DEFAULT_SETTINGS: KBSyncSettings = {
   syncEnabled: true,
   userName: "",
   presenceHeartbeatMinutes: 2,
+  statusMessage: "",
 };
 
 export class KBSyncSettingTab extends PluginSettingTab {
@@ -228,7 +230,7 @@ export class KBSyncSettingTab extends PluginSettingTab {
       )
       .addText((text) =>
         text
-          .setPlaceholder("e.g. justus")
+          .setPlaceholder("e.g. alice")
           .setValue(this.plugin.settings.userName)
           .onChange(async (value) => {
             this.plugin.settings.userName = value;

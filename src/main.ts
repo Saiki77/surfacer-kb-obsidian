@@ -21,6 +21,7 @@ export default class KBSyncPlugin extends Plugin {
   private pullIntervalId: number | null = null;
   private pushIntervalId: number | null = null;
   private presenceIntervalId: number | null = null;
+  private chatIntervalId: number | null = null;
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -128,9 +129,21 @@ export default class KBSyncPlugin extends Plugin {
           this.sidebarView.updatePresence();
           this.sidebarView.refreshPresence();
           this.sidebarView.refreshHandoffs();
+          this.sidebarView.refreshChat();
         }
       }, 3000);
     });
+  }
+
+  async forcePull(): Promise<void> {
+    await this.syncEngine.pull();
+    await this.persistSyncData();
+    if (this.sidebarView) {
+      this.sidebarView.refreshRemoteFiles();
+      this.sidebarView.refreshPresence();
+      this.sidebarView.refreshHandoffs();
+      this.sidebarView.refreshChat();
+    }
   }
 
   async onunload(): Promise<void> {
@@ -183,6 +196,14 @@ export default class KBSyncPlugin extends Plugin {
         }
       }, presenceMs);
       this.registerInterval(this.presenceIntervalId);
+
+      // Chat refresh (every 30 seconds)
+      this.chatIntervalId = window.setInterval(() => {
+        if (this.sidebarView) {
+          this.sidebarView.refreshChat();
+        }
+      }, 30 * 1000);
+      this.registerInterval(this.chatIntervalId);
     }
   }
 
@@ -198,6 +219,10 @@ export default class KBSyncPlugin extends Plugin {
     if (this.presenceIntervalId !== null) {
       window.clearInterval(this.presenceIntervalId);
       this.presenceIntervalId = null;
+    }
+    if (this.chatIntervalId !== null) {
+      window.clearInterval(this.chatIntervalId);
+      this.chatIntervalId = null;
     }
   }
 

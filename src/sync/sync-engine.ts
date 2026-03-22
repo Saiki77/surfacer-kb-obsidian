@@ -562,4 +562,112 @@ export class SyncEngine {
     await this.pull();
     await this.push();
   }
+
+  /**
+   * Handle a folder rename in the vault by moving all S3 objects
+   * under the old prefix to the new prefix and updating the manifest.
+   */
+  async handleFolderRename(
+    oldFolderRelPath: string,
+    newFolderRelPath: string
+  ): Promise<void> {
+    if (!(await this.acquireLock())) return;
+
+    try {
+      this.setStatus("pushing");
+
+      const online = await s3.checkConnectivity(this.settings);
+      if (!online) {
+        // Can't rename on S3 while offline — queue a full push for later
+        this.setStatus("offline");
+        return;
+      }
+
+      const oldPrefix = oldFolderRelPath.endsWith("/")
+        ? oldFolderRelPath
+        : oldFolderRelPath + "/";
+      const newPrefix = newFolderRelPath.endsWith("/")
+        ? newFolderRelPath
+        : newFolderRelPath + "/";
+
+      const moved = await s3.renamePrefix(
+        this.settings,
+        oldPrefix,
+        newPrefix
+      );
+
+      // Update manifest entries for moved files
+      for (const [oldKey, newKey] of moved) {
+        const entry = this.manifest.getEntry(oldKey);
+        if (entry) {
+          this.manifest.removeEntry(oldKey);
+          this.manifest.setEntry(newKey, {
+            ...entry,
+            relativePath: newKey,
+          });
+        }
+        this.logActivity("push", newKey, `Renamed from ${oldKey}`);
+      }
+
+      if (moved.length > 0) {
+        new Notice(
+          `KB Sync: Renamed folder — moved ${moved.length} file(s)`
+        );
+      }
+
+      this.setStatus("idle");
+    } catch (err) {
+      console.error("KB Sync folder rename error:", err);
+      this.setStatus("error");
+      new Notice(`KB Sync error: ${(err as Error).message}`);
+    } finally {
+      this.releaseLock();
+    }
+  }
+
+  /**
+   * Handle a folder deletion in the vault by removing all S3 objects
+   * under that prefix and cleaning up the manifest.
+   */
+  async handleFolderDelete(folderRelPath: string): Promise<void> {
+    if (!(await this.acquireLock())) return;
+
+    try {
+      this.setStatus("pushing");
+
+      const online = await s3.checkConnectivity(this.settings);
+      if (!online) {
+        this.setStatus("offline");
+        return;
+      }
+
+      const prefix = folderRelPath.endsWith("/")
+        ? folderRelPath
+        : folderRelPath + "/";
+
+      const items = await s3.listAllObjects(this.settings);
+      let deleted = 0;
+
+      for (const item of items) {
+        if (item.key.startsWith(prefix)) {
+          await s3.deleteObject(this.settings, item.key);
+          this.manifest.removeEntry(item.key);
+          this.logActivity("delete", item.key, "Deleted (folder removed)");
+          deleted++;
+        }
+      }
+
+      if (deleted > 0) {
+        new Notice(`KB Sync: Deleted folder — removed ${deleted} file(s)`);
+      }
+
+      this.setStatus("idle");
+    } catch (err) {
+      console.error("KB Sync folder delete error:", err);
+      this.setStatus("error");
+      new Notice(`KB Sync error: ${(err as Error).message}`);
+    } finally {
+      this.releaseLock();
+    }
+  }
 }

@@ -5,6 +5,7 @@ import {
   DeleteObjectCommand,
   ListObjectsV2Command,
   HeadBucketCommand,
+  CopyObjectCommand,
 } from "@aws-sdk/client-s3";
 import { fromIni } from "@aws-sdk/credential-providers";
 import type { KBSyncSettings } from "../settings";
@@ -160,4 +161,43 @@ export async function deleteObject(
       Key: settings.s3Prefix + key,
     })
   );
+}
+
+export async function copyObject(
+  settings: KBSyncSettings,
+  sourceKey: string,
+  destKey: string
+): Promise<void> {
+  const s3 = getClient(settings);
+  await s3.send(
+    new CopyObjectCommand({
+      Bucket: settings.s3Bucket,
+      CopySource: `${settings.s3Bucket}/${settings.s3Prefix}${sourceKey}`,
+      Key: settings.s3Prefix + destKey,
+    })
+  );
+}
+
+/**
+ * Rename all objects under oldPrefix to newPrefix (copy + delete).
+ * Returns the list of [oldKey, newKey] pairs that were moved.
+ */
+export async function renamePrefix(
+  settings: KBSyncSettings,
+  oldPrefix: string,
+  newPrefix: string
+): Promise<Array<[string, string]>> {
+  const items = await listAllObjects(settings);
+  const moved: Array<[string, string]> = [];
+
+  for (const item of items) {
+    if (item.key.startsWith(oldPrefix)) {
+      const newKey = newPrefix + item.key.slice(oldPrefix.length);
+      await copyObject(settings, item.key, newKey);
+      await deleteObject(settings, item.key);
+      moved.push([item.key, newKey]);
+    }
+  }
+
+  return moved;
 }

@@ -1,4 +1,4 @@
-import { Plugin, addIcon } from "obsidian";
+import { Plugin, addIcon, TFolder, normalizePath } from "obsidian";
 import { KBSyncSettingTab, DEFAULT_SETTINGS, type KBSyncSettings } from "./settings";
 import { SyncEngine, type SyncStatus } from "./sync/sync-engine";
 import { SyncStatusBar } from "./ui/sync-status-bar";
@@ -96,6 +96,38 @@ export default class KBSyncPlugin extends Plugin {
       name: "Open Knowledge Base sidebar",
       callback: () => this.activateSidebar(),
     });
+
+    // Listen for folder renames and deletes within the sync folder
+    this.registerEvent(
+      this.app.vault.on("rename", async (file, oldPath) => {
+        if (!(file instanceof TFolder)) return;
+        const syncFolder = normalizePath(this.settings.syncFolderPath);
+        if (
+          !file.path.startsWith(syncFolder + "/") &&
+          !oldPath.startsWith(syncFolder + "/")
+        )
+          return;
+
+        const oldRel = oldPath.slice(syncFolder.length + 1);
+        const newRel = file.path.slice(syncFolder.length + 1);
+        await this.syncEngine.handleFolderRename(oldRel, newRel);
+        await this.persistSyncData();
+        if (this.sidebarView) this.sidebarView.refreshRemoteFiles();
+      })
+    );
+
+    this.registerEvent(
+      this.app.vault.on("delete", async (file) => {
+        if (!(file instanceof TFolder)) return;
+        const syncFolder = normalizePath(this.settings.syncFolderPath);
+        if (!file.path.startsWith(syncFolder + "/")) return;
+
+        const rel = file.path.slice(syncFolder.length + 1);
+        await this.syncEngine.handleFolderDelete(rel);
+        await this.persistSyncData();
+        if (this.sidebarView) this.sidebarView.refreshRemoteFiles();
+      })
+    );
 
     // Start sync intervals (includes presence heartbeat)
     this.startIntervals();

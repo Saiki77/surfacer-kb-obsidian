@@ -92,24 +92,6 @@ export default class KBSyncPlugin extends Plugin {
     });
 
     this.addCommand({
-      id: "pull-now",
-      name: "Pull from S3 now",
-      callback: async () => {
-        await this.syncEngine.pull();
-        await this.persistSyncData();
-      },
-    });
-
-    this.addCommand({
-      id: "push-now",
-      name: "Push to S3 now",
-      callback: async () => {
-        await this.syncEngine.push();
-        await this.persistSyncData();
-      },
-    });
-
-    this.addCommand({
       id: "open-sidebar",
       name: "Open Knowledge Base sidebar",
       callback: () => this.activateSidebar(),

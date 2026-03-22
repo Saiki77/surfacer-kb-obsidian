@@ -274,23 +274,6 @@ export class KBSyncSidebarView extends ItemView {
     // Tab bar
     const tabBar = contentEl.createDiv({ cls: "kb-sync-tab-bar" });
 
-    // Sync button (pull + push)
-    const syncBtn = tabBar.createEl("button", {
-      cls: "kb-sync-pull-btn",
-      attr: { "aria-label": "Sync now" },
-    });
-    setIcon(syncBtn, "refresh-cw");
-    syncBtn.addEventListener("click", async () => {
-      syncBtn.addClass("kb-sync-pull-btn-spinning");
-      syncBtn.setAttribute("disabled", "true");
-      try {
-        await this.plugin.forceSync();
-      } finally {
-        syncBtn.removeClass("kb-sync-pull-btn-spinning");
-        syncBtn.removeAttribute("disabled");
-      }
-    });
-
     const tabs: { id: TabName; label: string }[] = [
       { id: "files", label: "Files" },
       { id: "team", label: "Team" },

@@ -162,7 +162,8 @@ export class CollabSession {
 
   /**
    * Force the CM6 editor to match the Yjs document content.
-   * Preserves cursor position as much as possible.
+   * Maps the cursor through the change so it stays with the text
+   * the user was editing, not at a fixed character offset.
    */
   private forceResyncEditor(): void {
     if (!this.view) return;
@@ -172,15 +173,46 @@ export class CollabSession {
 
     this.isSyncing = true;
     try {
-      // Save cursor position
-      const cursorPos = Math.min(
-        this.view.state.selection.main.head,
-        yjsContent.length
-      );
+      const oldCursor = this.view.state.selection.main.head;
+
+      // Find where old and new content diverge (common prefix/suffix)
+      // This lets us compute where the cursor should land after the edit.
+      let prefixLen = 0;
+      const minLen = Math.min(editorContent.length, yjsContent.length);
+      while (prefixLen < minLen && editorContent[prefixLen] === yjsContent[prefixLen]) {
+        prefixLen++;
+      }
+
+      let suffixLen = 0;
+      while (
+        suffixLen < (minLen - prefixLen) &&
+        editorContent[editorContent.length - 1 - suffixLen] === yjsContent[yjsContent.length - 1 - suffixLen]
+      ) {
+        suffixLen++;
+      }
+
+      // The changed region in the old doc: [prefixLen, editorContent.length - suffixLen)
+      // The changed region in the new doc: [prefixLen, yjsContent.length - suffixLen)
+      const changeFrom = prefixLen;
+      const changeTo = editorContent.length - suffixLen;
+      const insertText = yjsContent.slice(prefixLen, yjsContent.length - suffixLen);
+
+      // Map cursor: if cursor was before the change, keep it.
+      // If inside/after the change, shift by the length delta.
+      let newCursor: number;
+      if (oldCursor <= changeFrom) {
+        newCursor = oldCursor;
+      } else if (oldCursor >= changeTo) {
+        newCursor = oldCursor + (yjsContent.length - editorContent.length);
+      } else {
+        // Cursor was inside the changed region — place at end of new text
+        newCursor = changeFrom + insertText.length;
+      }
+      newCursor = Math.max(0, Math.min(newCursor, yjsContent.length));
 
       this.view.dispatch({
-        changes: { from: 0, to: editorContent.length, insert: yjsContent },
-        selection: { anchor: cursorPos },
+        changes: { from: changeFrom, to: changeTo, insert: insertText },
+        selection: { anchor: newCursor },
       });
     } catch (err) {
       console.error("KB Collab: Force resync failed:", err);

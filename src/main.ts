@@ -100,11 +100,13 @@ export default class KBSyncPlugin extends Plugin {
     // Settings tab
     this.addSettingTab(new KBSyncSettingTab(this.app, this));
 
-    // Ribbon icon for force sync
-    this.addRibbonIcon("kb-sync", "Force KB Sync", async () => {
-      await this.syncEngine.forceSync();
-      await this.persistSyncData();
-    });
+    // Ribbon icon for force sync (only when collab is NOT active)
+    if (!this.settings.collaborationEnabled || !this.settings.wsUrl) {
+      this.addRibbonIcon("kb-sync", "Force KB Sync", async () => {
+        await this.syncEngine.forceSync();
+        await this.persistSyncData();
+      });
+    }
 
     // Commands
     this.addCommand({
@@ -256,11 +258,22 @@ export default class KBSyncPlugin extends Plugin {
       this.registerInterval(this.chatIntervalId);
     }
 
-    // Collab UI refresh (every 2s — updates collab bar avatars from cursor data)
+    // Collab UI refresh (every 2s — updates collab bar + status bar online count)
     if (this.settings.collaborationEnabled && this.settings.wsUrl) {
       this.collabPresenceIntervalId = window.setInterval(() => {
         if (this.sidebarView) {
           this.sidebarView.refreshCollabState();
+        }
+        // Update status bar with online count
+        const activeFile = this.app.workspace.getActiveFile();
+        const syncFolder = this.settings.syncFolderPath;
+        if (activeFile?.path?.startsWith(syncFolder + "/")) {
+          const docPath = activeFile.path.slice(syncFolder.length + 1);
+          const remoteUsers = this.collabManager?.getActiveCollaborators?.(docPath) ?? [];
+          const onlineCount = 1 + remoteUsers.length; // 1 = yourself
+          this.statusBar.update("idle", 0, 0, onlineCount);
+        } else {
+          this.statusBar.update("idle", 0, 0, this.collabManager?.isConnected ? 1 : undefined);
         }
       }, 2000);
       this.registerInterval(this.collabPresenceIntervalId);

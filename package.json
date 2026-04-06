@@ -1,6 +1,6 @@
 {
   "name": "obsidian-kb-sync",
-  "version": "2.1.3",
+  "version": "2.1.4",
   "description": "Obsidian plugin for bidirectional S3 knowledge base sync",
   "main": "main.js",
   "scripts": {

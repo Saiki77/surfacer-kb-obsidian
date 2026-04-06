@@ -9,8 +9,20 @@ export class SyncStatusBar {
     this.update("idle", 0, 0);
   }
 
-  update(status: SyncStatus, conflicts: number, queued: number): void {
+  update(
+    status: SyncStatus,
+    conflicts: number,
+    queued: number,
+    onlineCount?: number
+  ): void {
     let text: string;
+
+    // When collab is active, show online count
+    if (onlineCount != null && onlineCount > 0) {
+      text = `KB: ${onlineCount} online`;
+      this.statusBarEl.setText(text);
+      return;
+    }
 
     switch (status) {
       case "pulling":

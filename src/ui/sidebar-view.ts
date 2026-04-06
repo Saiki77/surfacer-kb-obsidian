@@ -425,15 +425,7 @@ export class KBSyncSidebarView extends ItemView {
   // ── Files Tab ──────────────────────────────────────────
 
   private renderFiles(container: HTMLElement): void {
-    const toolbar = container.createDiv({ cls: "kb-sync-toolbar" });
-    const refreshBtn = toolbar.createEl("button", {
-      cls: "kb-sync-toolbar-btn",
-      attr: { "aria-label": "Refresh" },
-    });
-    setIcon(refreshBtn, "refresh-cw");
-    refreshBtn.addEventListener("click", () => this.refreshRemoteFiles());
-
-    const countEl = toolbar.createSpan({ cls: "kb-sync-file-count" });
+    const countEl = container.createDiv({ cls: "kb-sync-file-count" });
     countEl.setText(`${this.remoteFiles.length} file(s)`);
 
     if (this.remoteFiles.length === 0) {
@@ -521,14 +513,6 @@ export class KBSyncSidebarView extends ItemView {
   // ── Team Tab ───────────────────────────────────────────
 
   private renderTeam(container: HTMLElement): void {
-    const toolbar = container.createDiv({ cls: "kb-sync-toolbar" });
-    const refreshBtn = toolbar.createEl("button", {
-      cls: "kb-sync-toolbar-btn",
-      attr: { "aria-label": "Refresh" },
-    });
-    setIcon(refreshBtn, "refresh-cw");
-    refreshBtn.addEventListener("click", () => this.refreshPresence());
-
     if (!this.plugin.settings.userName) {
       container.createDiv({
         cls: "kb-sync-empty",
@@ -992,14 +976,6 @@ export class KBSyncSidebarView extends ItemView {
   // ── Handoffs Tab ───────────────────────────────────────
 
   private renderHandoffs(container: HTMLElement): void {
-    const toolbar = container.createDiv({ cls: "kb-sync-toolbar" });
-    const refreshBtn = toolbar.createEl("button", {
-      cls: "kb-sync-toolbar-btn",
-      attr: { "aria-label": "Refresh" },
-    });
-    setIcon(refreshBtn, "refresh-cw");
-    refreshBtn.addEventListener("click", () => this.refreshHandoffs());
-
     const openHandoffs = this.handoffs.filter((h) => h.status === "open");
     const claimedHandoffs = this.handoffs.filter((h) => h.status === "claimed");
     const completedHandoffs = this.handoffs.filter((h) => h.status === "completed");
@@ -1366,14 +1342,6 @@ export class KBSyncSidebarView extends ItemView {
       text: this.historyDocPath,
       cls: "kb-sync-history-doc-name",
     });
-
-    // Refresh button
-    const refreshBtn = header.createEl("button", {
-      cls: "kb-sync-toolbar-btn",
-      attr: { "aria-label": "Refresh history" },
-    });
-    setIcon(refreshBtn, "refresh-cw");
-    refreshBtn.addEventListener("click", () => this.refreshHistory());
 
     if (this.historyEntries.length === 0) {
       const empty = container.createDiv({ cls: "kb-sync-history-empty" });

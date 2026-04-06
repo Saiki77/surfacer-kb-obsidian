@@ -5,5 +5,6 @@
   "minAppVersion": "1.0.0",
   "description": "Bidirectional S3 sync with live collaboration, real-time co-editing, version history, and team features",
   "author": "Surfacer",
-  "isDesktopOnly": true
+  "isDesktopOnly": true,
+  "fundingUrl": "https://buymeacoffee.com/saiki77"
 }

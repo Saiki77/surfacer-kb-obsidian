@@ -317,8 +317,10 @@ export class KBSyncSettingTab extends PluginSettingTab {
             resultEl.style.color = "var(--text-muted)";
 
             try {
-              const latency = await this.measureLatency(wsUrl);
-              resultEl.setText(`Connected \u2014 latency: ${latency}ms`);
+              const { connectMs, pingMs } = await this.measureLatency(wsUrl);
+              resultEl.setText(
+                `Connected (${connectMs}ms) \u2014 message round-trip: ${pingMs}ms`
+              );
               resultEl.style.color = "var(--color-green)";
             } catch (err) {
               resultEl.setText(
@@ -331,9 +333,11 @@ export class KBSyncSettingTab extends PluginSettingTab {
     }
   }
 
-  private measureLatency(wsUrl: string): Promise<number> {
+  private measureLatency(
+    wsUrl: string
+  ): Promise<{ connectMs: number; pingMs: number }> {
     return new Promise((resolve, reject) => {
-      const start = performance.now();
+      const connectStart = performance.now();
       let settled = false;
 
       const timeout = window.setTimeout(() => {
@@ -347,16 +351,18 @@ export class KBSyncSettingTab extends PluginSettingTab {
       const ws = new WebSocket(wsUrl);
 
       ws.onopen = () => {
-        const latency = Math.round(performance.now() - start);
-        settled = true;
-        clearTimeout(timeout);
-        // Send a test message to measure full round-trip
+        const connectMs = Math.round(performance.now() - connectStart);
+        // Now measure actual message round-trip with ping/pong
         const pingStart = performance.now();
-        ws.send(JSON.stringify({ action: "ping" }));
-        // For WebSocket API Gateway, the connection itself proves connectivity.
-        // Use the connection time as latency since ping won't get a response.
-        ws.close();
-        resolve(latency);
+        ws.send(JSON.stringify({ action: "ping", ts: pingStart }));
+
+        ws.onmessage = (event) => {
+          const pingMs = Math.round(performance.now() - pingStart);
+          settled = true;
+          clearTimeout(timeout);
+          ws.close();
+          resolve({ connectMs, pingMs });
+        };
       };
 
       ws.onerror = () => {

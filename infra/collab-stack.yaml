@@ -80,7 +80,9 @@ Resources:
       FunctionName: !Sub "${AWS::StackName}-handler"
       Runtime: nodejs20.x
       Handler: index.handler
-      MemorySize: 128
+      Architectures:
+        - arm64
+      MemorySize: 512
       Timeout: 10
       Role: !GetAtt LambdaRole.Arn
       Environment:
@@ -161,6 +163,15 @@ Resources:
                   },
                 }));
                 return { statusCode: 200, body: "Unsubscribed" };
+              }
+
+              if (msg.action === "ping") {
+                // Echo back to sender for latency measurement — no DynamoDB needed
+                await apigw.send(new PostToConnectionCommand({
+                  ConnectionId: connectionId,
+                  Data: JSON.stringify({ action: "pong", ts: msg.ts }),
+                }));
+                return { statusCode: 200, body: "Pong" };
               }
 
               if (msg.action === "update" || msg.action === "cursor") {

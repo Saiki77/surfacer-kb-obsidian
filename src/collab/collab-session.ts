@@ -124,30 +124,14 @@ export class CollabSession {
     this.view = view;
 
     // Sync initial content (Yjs → Editor if different)
-    const yjsContent = this.ytext.toString();
-    const editorContent = view.state.doc.toString();
-    if (yjsContent !== editorContent) {
-      this.isSyncing = true;
-      view.dispatch({
-        changes: { from: 0, to: editorContent.length, insert: yjsContent },
-      });
-      this.isSyncing = false;
-    }
+    this.forceResyncEditor();
 
     // Observe Y.Text changes (from remote updates) → push to CM6 editor
-    this.ytextObserver = (event: Y.YTextEvent) => {
+    this.ytextObserver = () => {
+      // Instead of converting deltas (which can drift), always verify
+      // the CM6 content matches Yjs and force-resync if needed.
       if (this.isSyncing || !this.view) return;
-      this.isSyncing = true;
-      try {
-        const changes = yTextEventToChangeSpec(event);
-        if (changes.length > 0) {
-          this.view.dispatch({ changes });
-        }
-      } catch (err) {
-        console.error("KB Collab: Error applying remote changes to editor:", err);
-      } finally {
-        this.isSyncing = false;
-      }
+      this.forceResyncEditor();
     };
     this.ytext.observe(this.ytextObserver);
 
@@ -167,8 +151,54 @@ export class CollabSession {
       });
     } catch (err) {
       console.error("KB Collab: Error applying local changes to Yjs:", err);
+      // Conversion failed — force resync to recover
+      this.forceResyncEditor();
     } finally {
       this.isSyncing = false;
+    }
+    // Verify CM6 and Yjs are still in sync after local change
+    this.verifySync();
+  }
+
+  /**
+   * Force the CM6 editor to match the Yjs document content.
+   * Preserves cursor position as much as possible.
+   */
+  private forceResyncEditor(): void {
+    if (!this.view) return;
+    const yjsContent = this.ytext.toString();
+    const editorContent = this.view.state.doc.toString();
+    if (yjsContent === editorContent) return;
+
+    this.isSyncing = true;
+    try {
+      // Save cursor position
+      const cursorPos = Math.min(
+        this.view.state.selection.main.head,
+        yjsContent.length
+      );
+
+      this.view.dispatch({
+        changes: { from: 0, to: editorContent.length, insert: yjsContent },
+        selection: { anchor: cursorPos },
+      });
+    } catch (err) {
+      console.error("KB Collab: Force resync failed:", err);
+    } finally {
+      this.isSyncing = false;
+    }
+  }
+
+  /**
+   * Verify CM6 and Yjs are in sync. If not, schedule a resync.
+   */
+  private verifySync(): void {
+    if (!this.view || this.isSyncing) return;
+    const yjsContent = this.ytext.toString();
+    const editorContent = this.view.state.doc.toString();
+    if (yjsContent !== editorContent) {
+      // Drift detected — resync on next microtask to avoid re-entrancy
+      queueMicrotask(() => this.forceResyncEditor());
     }
   }
 

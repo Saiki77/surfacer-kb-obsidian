@@ -174,7 +174,7 @@ Resources:
                 return { statusCode: 200, body: "Pong" };
               }
 
-              if (msg.action === "update" || msg.action === "cursor") {
+              if (msg.docPath && ["update", "cursor", "sync-vector", "sync-diff"].includes(msg.action)) {
                 // Broadcast to all connections on the same docPath, except sender
                 const result = await ddb.send(new QueryCommand({
                   TableName: TABLE,

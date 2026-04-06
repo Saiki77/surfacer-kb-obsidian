@@ -4,6 +4,7 @@
  * as soon as it's opened. No presence-gating — just like Google Docs.
  */
 
+import * as Y from "yjs";
 import { App, MarkdownView, TFile, normalizePath } from "obsidian";
 import { ViewPlugin, EditorView } from "@codemirror/view";
 import type { ViewUpdate, PluginValue } from "@codemirror/view";
@@ -23,6 +24,7 @@ export class CollabManager {
   private destroyed = false;
   private cursorInterval: number | null = null;
   private scanInterval: number | null = null;
+  private reconcileInterval: number | null = null;
 
   // Track which EditorViews are bound to which sessions
   private boundEditors: Map<string, EditorView> = new Map();
@@ -61,13 +63,29 @@ export class CollabManager {
       this.settings.userName
     );
 
-    // Route incoming updates and cursors to the correct session
+    // Route incoming messages to the correct session
     this.transport.onUpdate((docPath, data, userId) => {
       this.sessions.get(docPath)?.applyRemoteUpdate(data);
     });
 
     this.transport.onCursor((docPath, userId, anchor, head) => {
       this.sessions.get(docPath)?.setRemoteCursor(userId, anchor, head);
+    });
+
+    // Yjs sync protocol: when a peer sends their state vector,
+    // compute the diff they're missing and send it back
+    this.transport.onSyncVector((docPath, remoteSV, userId) => {
+      const session = this.sessions.get(docPath);
+      if (!session) return;
+      const diff = Y.encodeStateAsUpdate(session.getYDoc(), remoteSV);
+      if (diff.length > 2) { // >2 bytes means there's actual data
+        this.transport!.sendSyncDiff(docPath, diff);
+      }
+    });
+
+    // When receiving a diff, apply it (fills in any missing updates)
+    this.transport.onSyncDiff((docPath, diff, userId) => {
+      this.sessions.get(docPath)?.applyRemoteUpdate(diff);
     });
 
     this.transport.onStatus((connected) => {
@@ -290,6 +308,12 @@ export class CollabManager {
     this.scanInterval = window.setInterval(() => {
       this.scanAndBindEditors();
     }, 2000);
+
+    // Reconciliation: exchange state vectors every 5 seconds
+    // This ensures peers converge even if individual updates were lost
+    this.reconcileInterval = window.setInterval(() => {
+      this.reconcile();
+    }, 5000);
   }
 
   private stopPolling(): void {
@@ -300,6 +324,23 @@ export class CollabManager {
     if (this.scanInterval !== null) {
       window.clearInterval(this.scanInterval);
       this.scanInterval = null;
+    }
+    if (this.reconcileInterval !== null) {
+      window.clearInterval(this.reconcileInterval);
+      this.reconcileInterval = null;
+    }
+  }
+
+  /**
+   * Send our state vector for each active session so peers can send
+   * back any updates we're missing. This is the Yjs sync protocol —
+   * guarantees convergence even if individual WebSocket messages were lost.
+   */
+  private reconcile(): void {
+    if (!this.transport?.connected) return;
+    for (const [docPath, session] of this.sessions) {
+      const sv = Y.encodeStateVector(session.getYDoc());
+      this.transport.sendSyncVector(docPath, sv);
     }
   }
 

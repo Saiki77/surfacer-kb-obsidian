@@ -213,8 +213,13 @@ export default class KBSyncPlugin extends Plugin {
 
     if (!this.settings.syncEnabled) return;
 
-    const pullMs = this.settings.pullIntervalMinutes * 60 * 1000;
-    const pushMs = this.settings.pushIntervalMinutes * 60 * 1000;
+    const collabActive = this.settings.collaborationEnabled && this.settings.wsUrl;
+
+    // When collab is active: pull less frequently (just for new file discovery),
+    // skip push entirely (edits go via WebSocket)
+    const pullMs = collabActive
+      ? 10 * 60 * 1000  // 10 min when collab active
+      : this.settings.pullIntervalMinutes * 60 * 1000;
 
     this.pullIntervalId = window.setInterval(async () => {
       await this.syncEngine.pull();
@@ -222,11 +227,14 @@ export default class KBSyncPlugin extends Plugin {
     }, pullMs);
     this.registerInterval(this.pullIntervalId);
 
-    this.pushIntervalId = window.setInterval(async () => {
-      await this.syncEngine.push();
-      await this.persistSyncData();
-    }, pushMs);
-    this.registerInterval(this.pushIntervalId);
+    if (!collabActive) {
+      const pushMs = this.settings.pushIntervalMinutes * 60 * 1000;
+      this.pushIntervalId = window.setInterval(async () => {
+        await this.syncEngine.push();
+        await this.persistSyncData();
+      }, pushMs);
+      this.registerInterval(this.pushIntervalId);
+    }
 
     // Presence heartbeat
     if (this.settings.userName) {

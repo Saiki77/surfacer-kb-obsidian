@@ -238,6 +238,10 @@ export class CollabSession {
     return this.ytext.toString();
   }
 
+  getYDoc(): Y.Doc {
+    return this.ydoc;
+  }
+
   getBoundView(): EditorView | null {
     return this.view;
   }

@@ -400,18 +400,27 @@ export class KBSyncSidebarView extends ItemView {
     }
 
     // Live collaborator bar (Google Docs-style)
-    this.renderCollabBar(contentEl);
+    try {
+      this.renderCollabBar(contentEl);
+    } catch {
+      // Never let the collab bar crash the entire sidebar render
+    }
 
     // Content
     const body = contentEl.createDiv({ cls: "kb-sync-sidebar-body" });
 
-    switch (this.activeTab) {
-      case "files": this.renderFiles(body); break;
-      case "activity": this.renderActivity(body); break;
-      case "team": this.renderTeam(body); break;
-      case "handoffs": this.renderHandoffs(body); break;
-      case "chat": this.renderChat(body); break;
-      case "history": this.renderHistory(body); break;
+    try {
+      switch (this.activeTab) {
+        case "files": this.renderFiles(body); break;
+        case "activity": this.renderActivity(body); break;
+        case "team": this.renderTeam(body); break;
+        case "handoffs": this.renderHandoffs(body); break;
+        case "chat": this.renderChat(body); break;
+        case "history": this.renderHistory(body); break;
+      }
+    } catch (err) {
+      body.createDiv({ cls: "kb-sync-empty", text: "Error rendering tab." });
+      console.error("KB Sync sidebar render error:", err);
     }
   }
 

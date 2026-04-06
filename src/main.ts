@@ -20,7 +20,7 @@ export default class KBSyncPlugin extends Plugin {
   private syncEngine!: SyncEngine;
   private statusBar!: SyncStatusBar;
   private sidebarView: KBSyncSidebarView | null = null;
-  private collabManager!: CollabManager;
+  collabManager!: CollabManager;
   private pullIntervalId: number | null = null;
   private pushIntervalId: number | null = null;
   private presenceIntervalId: number | null = null;
@@ -245,14 +245,13 @@ export default class KBSyncPlugin extends Plugin {
       this.registerInterval(this.chatIntervalId);
     }
 
-    // Collab presence refresh (faster when collaboration is active)
+    // Collab UI refresh (every 2s — updates collab bar avatars from cursor data)
     if (this.settings.collaborationEnabled && this.settings.wsUrl) {
       this.collabPresenceIntervalId = window.setInterval(() => {
         if (this.sidebarView) {
-          this.sidebarView.updatePresence();
-          this.sidebarView.refreshPresence();
+          this.sidebarView.refreshCollabState();
         }
-      }, 5000);
+      }, 2000);
       this.registerInterval(this.collabPresenceIntervalId);
     }
   }

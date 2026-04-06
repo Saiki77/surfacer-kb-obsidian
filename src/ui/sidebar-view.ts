@@ -121,6 +121,15 @@ export class KBSyncSidebarView extends ItemView {
     return this.teamPresence;
   }
 
+  /**
+   * Lightweight refresh: re-render the collab bar + history if on that tab.
+   * Called frequently (every 2s) during collaboration.
+   */
+  refreshCollabState(): void {
+    // Re-render the collab bar by doing a full render (it's fast)
+    this.render();
+  }
+
   async refreshRemoteFiles(): Promise<void> {
     try {
       this.remoteFiles = await s3.listAllObjects(this.plugin.settings);
@@ -1175,34 +1184,41 @@ export class KBSyncSidebarView extends ItemView {
     const docPath = activeFile.path.replace(syncFolder + "/", "");
     const myName = this.plugin.settings.userName;
 
-    // Find other users who have this document open
-    const now = Date.now();
-    const collaborators = this.teamPresence.filter((p) => {
-      if (p.user === myName) return false;
-      if (now - new Date(p.heartbeat).getTime() > 5 * 60 * 1000) return false;
-      return p.openDocs.includes(docPath) || p.workingOn === docPath;
-    });
+    // Get collaborators from WebSocket cursor data (instant, no S3 polling delay)
+    const cursorUsers: string[] = this.plugin.collabManager?.getActiveCollaborators?.(docPath) ?? [];
 
-    if (collaborators.length === 0) return;
+    // Also check S3 presence as fallback
+    const now = Date.now();
+    const presenceUsers = this.teamPresence
+      .filter((p) => {
+        if (p.user === myName) return false;
+        if (now - new Date(p.heartbeat).getTime() > 5 * 60 * 1000) return false;
+        return p.openDocs.includes(docPath) || p.workingOn === docPath;
+      })
+      .map((p) => p.user);
+
+    // Merge both sources, deduplicate
+    const allUsers = [...new Set([...cursorUsers, ...presenceUsers])];
+    if (allUsers.length === 0) return;
 
     const bar = contentEl.createDiv({ cls: "kb-sync-collab-bar" });
-    const liveIcon = bar.createSpan({ cls: "kb-sync-collab-live-dot" });
+    bar.createSpan({ cls: "kb-sync-collab-live-dot" });
     bar.createSpan({
       text: "Live",
       cls: "kb-sync-collab-live-label",
     });
 
-    for (const collab of collaborators) {
-      const colorIdx = this.hashUserColor(collab.user);
+    for (const user of allUsers) {
+      const colorIdx = this.hashUserColor(user);
       const avatar = bar.createSpan({
         cls: `kb-sync-collab-avatar kb-sync-collab-avatar-${colorIdx}`,
       });
-      avatar.setText(collab.user.charAt(0).toUpperCase());
-      avatar.setAttribute("aria-label", collab.user);
+      avatar.setText(user.charAt(0).toUpperCase());
+      avatar.setAttribute("aria-label", user);
     }
 
     bar.createSpan({
-      text: collaborators.map((c) => c.user).join(", "),
+      text: allUsers.join(", "),
       cls: "kb-sync-collab-names",
     });
   }

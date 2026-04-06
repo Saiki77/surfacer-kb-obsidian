@@ -29,16 +29,19 @@ function historyKey(settings: KBSyncSettings, docPath: string, id: string): stri
 
 /**
  * Save a history snapshot to S3.
+ * If existingId is provided, updates that entry (same session, same user).
+ * Returns the entry ID for subsequent updates.
  */
 export async function saveSnapshot(
   settings: KBSyncSettings,
   docPath: string,
   content: string,
   userId: string,
-  sessionId: string
-): Promise<void> {
+  sessionId: string,
+  existingId?: string
+): Promise<string> {
   const timestamp = new Date().toISOString();
-  const id = `${timestamp.replace(/[:.]/g, "-")}-${userId}`;
+  const id = existingId || `${timestamp.replace(/[:.]/g, "-")}-${userId}`;
 
   const entry: HistoryEntry = {
     id,
@@ -59,8 +62,12 @@ export async function saveSnapshot(
     "application/json"
   );
 
-  // Enforce max snapshots — delete oldest if over limit
-  await enforceLimit(settings, docPath);
+  // Enforce max snapshots — delete oldest if over limit (only on new entries)
+  if (!existingId) {
+    await enforceLimit(settings, docPath);
+  }
+
+  return id;
 }
 
 /**

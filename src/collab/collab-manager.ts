@@ -181,6 +181,15 @@ export class CollabManager {
   }
 
   /**
+   * Get userIds of active collaborators on a document (based on cursor data).
+   * This is instant — doesn't depend on S3 presence polling.
+   */
+  getActiveCollaborators(docPath: string): string[] {
+    const cursors = this.getRemoteCursors(docPath);
+    return cursors.map((c) => c.userId);
+  }
+
+  /**
    * Get list of docPaths that currently have active collab sessions.
    */
   getActiveSessionPaths(): string[] {

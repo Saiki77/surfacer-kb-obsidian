@@ -33,6 +33,8 @@ export class CollabSession {
   private destroyed = false;
   private snapshotInterval: number | null = null;
   private historyTimer: number | null = null;
+  private historySessionTimer: number | null = null;
+  private currentHistoryId: string | null = null;
   private sessionId: string;
   private remoteCursors: Map<string, CursorInfo> = new Map();
 
@@ -246,7 +248,13 @@ export class CollabSession {
     return this.view;
   }
 
+  /**
+   * Google Sheets-style history: saves once when editing starts, then
+   * UPDATES the same entry within the session. A new session starts
+   * after 2 minutes of inactivity.
+   */
   private scheduleHistorySnapshot(): void {
+    // Debounce: wait 3s after last keystroke before saving
     if (this.historyTimer !== null) {
       window.clearTimeout(this.historyTimer);
     }
@@ -254,17 +262,27 @@ export class CollabSession {
       this.historyTimer = null;
       if (this.destroyed) return;
       try {
-        await historyManager.saveSnapshot(
+        // Save or update the current history entry
+        this.currentHistoryId = await historyManager.saveSnapshot(
           this.settings,
           this.docPath,
           this.getContent(),
           this.settings.userName,
-          this.sessionId
+          this.sessionId,
+          this.currentHistoryId ?? undefined
         );
       } catch (err) {
         console.error(`KB Collab: History snapshot failed for ${this.docPath}:`, err);
       }
-    }, 5000);
+    }, 3000);
+
+    // Session timer: after 2 min of no edits, start a new history entry
+    if (this.historySessionTimer !== null) {
+      window.clearTimeout(this.historySessionTimer);
+    }
+    this.historySessionTimer = window.setTimeout(() => {
+      this.currentHistoryId = null; // Next edit creates a new entry
+    }, 2 * 60 * 1000);
   }
 
   async saveSnapshot(): Promise<void> {
@@ -286,6 +304,9 @@ export class CollabSession {
     }
     if (this.historyTimer !== null) {
       window.clearTimeout(this.historyTimer);
+    }
+    if (this.historySessionTimer !== null) {
+      window.clearTimeout(this.historySessionTimer);
     }
 
     this.unbindEditor();

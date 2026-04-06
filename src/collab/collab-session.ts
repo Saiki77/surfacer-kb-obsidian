@@ -255,15 +255,22 @@ export class CollabSession {
     this.historyTimer = window.setTimeout(async () => {
       this.historyTimer = null;
       if (this.destroyed) return;
+
+      // Generate ID upfront if we don't have one (prevents race conditions
+      // where two saves create separate entries)
+      if (!this.currentHistoryId) {
+        const ts = new Date().toISOString().replace(/[:.]/g, "-");
+        this.currentHistoryId = `${ts}-${this.settings.userName}`;
+      }
+
       try {
-        // Save or update the current history entry
-        this.currentHistoryId = await historyManager.saveSnapshot(
+        await historyManager.saveSnapshot(
           this.settings,
           this.docPath,
           this.getContent(),
           this.settings.userName,
           this.sessionId,
-          this.currentHistoryId ?? undefined
+          this.currentHistoryId
         );
       } catch (err) {
         console.error(`KB Collab: History snapshot failed for ${this.docPath}:`, err);

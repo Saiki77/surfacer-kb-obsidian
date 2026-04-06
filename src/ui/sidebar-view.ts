@@ -135,7 +135,7 @@ export class KBSyncSidebarView extends ItemView {
       this.remoteFiles = await s3.listAllObjects(this.plugin.settings);
       // Filter out operational prefixes
       this.remoteFiles = this.remoteFiles.filter(
-        (f) => !f.key.startsWith("_handoffs/") && !f.key.startsWith("_presence/") && !f.key.startsWith("_chat/") && !f.key.startsWith("_collab/")
+        (f) => !f.key.startsWith("_")
       );
       this.remoteFiles.sort((a, b) => a.key.localeCompare(b.key));
       if (this.activeTab === "files") {

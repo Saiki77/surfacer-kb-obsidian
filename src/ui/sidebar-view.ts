@@ -124,24 +124,66 @@ export class KBSyncSidebarView extends ItemView {
   /**
    * Lightweight refresh: only update the collab bar element.
    * Does NOT call render() to avoid destroying the entire sidebar every 2s.
+   * Uses vanilla DOM (not Obsidian's createDiv) since we're operating
+   * outside the normal render cycle.
    */
   refreshCollabState(): void {
     try {
+      // Remove existing bar
       const existing = this.contentEl.querySelector(".kb-sync-collab-bar");
       if (existing) existing.remove();
-      // Re-insert collab bar at the top (after tab bar)
-      const tabBar = this.contentEl.querySelector(".kb-sync-tab-bar");
+
+      if (!this.plugin.settings.collaborationEnabled) return;
+      const activeFile = this.app.workspace.getActiveFile();
+      const syncFolder = this.plugin.settings.syncFolderPath;
+      if (!activeFile || !activeFile.path.startsWith(syncFolder + "/")) return;
+      const docPath = activeFile.path.replace(syncFolder + "/", "");
+
+      const isInCollab = this.plugin.collabManager?.isInCollabMode?.(docPath) ?? false;
+      if (!isInCollab) return;
+
+      const myName = this.plugin.settings.userName;
+      const allUsers: string[] = myName ? [myName] : [];
+      const cursorUsers: string[] = this.plugin.collabManager?.getActiveCollaborators?.(docPath) ?? [];
+      for (const u of cursorUsers) {
+        if (!allUsers.includes(u)) allUsers.push(u);
+      }
+      if (allUsers.length === 0) return;
+
+      // Build bar with vanilla DOM
+      const bar = document.createElement("div");
+      bar.className = "kb-sync-collab-bar";
+
+      const dot = document.createElement("span");
+      dot.className = "kb-sync-collab-live-dot";
+      bar.appendChild(dot);
+
+      const label = document.createElement("span");
+      label.className = "kb-sync-collab-live-label";
+      label.textContent = "Live";
+      bar.appendChild(label);
+
+      for (const user of allUsers) {
+        const colorIdx = this.hashUserColor(user);
+        const avatar = document.createElement("span");
+        avatar.className = `kb-sync-collab-avatar kb-sync-collab-avatar-${colorIdx}`;
+        avatar.textContent = user.charAt(0).toUpperCase();
+        avatar.setAttribute("aria-label", user);
+        bar.appendChild(avatar);
+      }
+
+      const names = document.createElement("span");
+      names.className = "kb-sync-collab-names";
+      names.textContent = allUsers.join(", ");
+      bar.appendChild(names);
+
+      // Insert after tab bar, before body
       const body = this.contentEl.querySelector(".kb-sync-sidebar-body");
-      if (tabBar && body) {
-        const temp = document.createElement("div");
-        this.renderCollabBar(temp);
-        const bar = temp.firstChild;
-        if (bar) {
-          this.contentEl.insertBefore(bar, body);
-        }
+      if (body) {
+        this.contentEl.insertBefore(bar, body);
       }
     } catch {
-      // Sidebar might not be fully rendered yet
+      // Sidebar might not be fully rendered yet — safe to ignore
     }
   }
 

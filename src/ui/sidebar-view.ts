@@ -122,12 +122,27 @@ export class KBSyncSidebarView extends ItemView {
   }
 
   /**
-   * Lightweight refresh: re-render the collab bar + history if on that tab.
-   * Called frequently (every 2s) during collaboration.
+   * Lightweight refresh: only update the collab bar element.
+   * Does NOT call render() to avoid destroying the entire sidebar every 2s.
    */
   refreshCollabState(): void {
-    // Re-render the collab bar by doing a full render (it's fast)
-    this.render();
+    try {
+      const existing = this.contentEl.querySelector(".kb-sync-collab-bar");
+      if (existing) existing.remove();
+      // Re-insert collab bar at the top (after tab bar)
+      const tabBar = this.contentEl.querySelector(".kb-sync-tab-bar");
+      const body = this.contentEl.querySelector(".kb-sync-sidebar-body");
+      if (tabBar && body) {
+        const temp = document.createElement("div");
+        this.renderCollabBar(temp);
+        const bar = temp.firstChild;
+        if (bar) {
+          this.contentEl.insertBefore(bar, body);
+        }
+      }
+    } catch {
+      // Sidebar might not be fully rendered yet
+    }
   }
 
   async refreshRemoteFiles(): Promise<void> {

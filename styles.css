@@ -1069,6 +1069,69 @@
   justify-content: flex-end;
 }
 
+/* ── Live Collaborator Bar ───────────────────────────── */
+
+.kb-sync-collab-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  background: var(--background-secondary);
+  border-bottom: 1px solid var(--background-modifier-border);
+  font-size: 12px;
+}
+
+.kb-sync-collab-live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #22c55e;
+  animation: kb-sync-pulse 2s ease-in-out infinite;
+  flex-shrink: 0;
+}
+
+@keyframes kb-sync-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.kb-sync-collab-live-label {
+  font-weight: 600;
+  color: #22c55e;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-right: 4px;
+}
+
+.kb-sync-collab-avatar {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: #fff;
+  flex-shrink: 0;
+}
+
+.kb-sync-collab-avatar-0 { background: #5b9bd5; }
+.kb-sync-collab-avatar-1 { background: #5bb564; }
+.kb-sync-collab-avatar-2 { background: #d56b6b; }
+.kb-sync-collab-avatar-3 { background: #9b6bd5; }
+.kb-sync-collab-avatar-4 { background: #d5a44a; }
+.kb-sync-collab-avatar-5 { background: #5bb5b5; }
+
+.kb-sync-collab-names {
+  color: var(--text-muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ── Collab cursor styles ───────────────────────────── */
 
 .kb-collab-cursor {

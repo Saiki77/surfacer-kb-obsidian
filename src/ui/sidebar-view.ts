@@ -333,6 +333,9 @@ export class KBSyncSidebarView extends ItemView {
       });
     }
 
+    // Live collaborator bar (Google Docs-style)
+    this.renderCollabBar(contentEl);
+
     // Content
     const body = contentEl.createDiv({ cls: "kb-sync-sidebar-body" });
 
@@ -1158,6 +1161,50 @@ export class KBSyncSidebarView extends ItemView {
       case "queue-drain": return "Queue drained";
       case "ai-process": return "AI processed";
     }
+  }
+
+  // ── Live Collaborator Bar ───────────────────────────
+
+  private renderCollabBar(contentEl: HTMLElement): void {
+    if (!this.plugin.settings.collaborationEnabled) return;
+
+    const activeFile = this.app.workspace.getActiveFile();
+    const syncFolder = this.plugin.settings.syncFolderPath;
+    if (!activeFile || !activeFile.path.startsWith(syncFolder + "/")) return;
+
+    const docPath = activeFile.path.replace(syncFolder + "/", "");
+    const myName = this.plugin.settings.userName;
+
+    // Find other users who have this document open
+    const now = Date.now();
+    const collaborators = this.teamPresence.filter((p) => {
+      if (p.user === myName) return false;
+      if (now - new Date(p.heartbeat).getTime() > 5 * 60 * 1000) return false;
+      return p.openDocs.includes(docPath) || p.workingOn === docPath;
+    });
+
+    if (collaborators.length === 0) return;
+
+    const bar = contentEl.createDiv({ cls: "kb-sync-collab-bar" });
+    const liveIcon = bar.createSpan({ cls: "kb-sync-collab-live-dot" });
+    bar.createSpan({
+      text: "Live",
+      cls: "kb-sync-collab-live-label",
+    });
+
+    for (const collab of collaborators) {
+      const colorIdx = this.hashUserColor(collab.user);
+      const avatar = bar.createSpan({
+        cls: `kb-sync-collab-avatar kb-sync-collab-avatar-${colorIdx}`,
+      });
+      avatar.setText(collab.user.charAt(0).toUpperCase());
+      avatar.setAttribute("aria-label", collab.user);
+    }
+
+    bar.createSpan({
+      text: collaborators.map((c) => c.user).join(", "),
+      cls: "kb-sync-collab-names",
+    });
   }
 
   // ── History Tab ──────────────────────────────────────

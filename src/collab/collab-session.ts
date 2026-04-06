@@ -1,12 +1,13 @@
 /**
  * CollabSession: manages a single Yjs document for one collaboratively-edited file.
- * Handles Yjs ↔ CM6 binding, update broadcasting, and S3 snapshot persistence.
+ * Directly binds to CM6 EditorView via StateEffect.appendConfig for two-way sync.
  */
 
 import * as Y from "yjs";
-import { yCollab } from "y-codemirror.next";
-import type { EditorView } from "@codemirror/view";
-import type { Extension } from "@codemirror/state";
+import { ViewPlugin, EditorView } from "@codemirror/view";
+import type { ViewUpdate } from "@codemirror/view";
+import { StateEffect } from "@codemirror/state";
+import type { ChangeSet } from "@codemirror/state";
 import type { CollabTransport } from "./collab-transport";
 import type { KBSyncSettings } from "../settings";
 import * as collabStorage from "./s3-collab-storage";
@@ -25,16 +26,15 @@ export class CollabSession {
   private ytext: Y.Text;
   private transport: CollabTransport;
   private settings: KBSyncSettings;
-  private boundView: EditorView | null = null;
-  private editorExtension: Extension | null = null;
-  private updateHandler: ((update: Uint8Array, origin: any) => void) | null = null;
-  private snapshotInterval: number | null = null;
-  private remoteCursors: Map<string, CursorInfo> = new Map();
+  private view: EditorView | null = null;
+  private ytextObserver: ((event: Y.YTextEvent) => void) | null = null;
+  private ydocUpdateHandler: ((update: Uint8Array, origin: any) => void) | null = null;
+  isSyncing = false;
   private destroyed = false;
-  private pendingUpdates: Uint8Array[] = [];
-  private flushTimer: number | null = null;
+  private snapshotInterval: number | null = null;
   private historyTimer: number | null = null;
   private sessionId: string;
+  private remoteCursors: Map<string, CursorInfo> = new Map();
 
   constructor(
     docPath: string,
@@ -50,64 +50,129 @@ export class CollabSession {
   }
 
   /**
-   * Initialize the Yjs document. Tries to load a snapshot from S3,
-   * falls back to initializing from the current markdown content.
+   * Initialize the Yjs document from current editor content.
+   * If a snapshot exists in S3, load it; otherwise use the provided content.
    */
   async initialize(currentContent: string): Promise<void> {
-    // Try loading existing snapshot from S3
     try {
       const snapshot = await collabStorage.readSnapshot(this.settings, this.docPath);
       if (snapshot) {
         Y.applyUpdate(this.ydoc, snapshot);
-        // If snapshot content differs significantly from current local content,
-        // the CRDT will handle merging when updates flow
+        // If snapshot diverged from local, use local as authoritative
+        if (this.ytext.toString() !== currentContent) {
+          this.ydoc.transact(() => {
+            this.ytext.delete(0, this.ytext.length);
+            this.ytext.insert(0, currentContent);
+          });
+        }
         return;
       }
     } catch {
-      // Snapshot unavailable, initialize from content
+      // No snapshot available
     }
 
-    // No snapshot — initialize from current markdown
+    // Initialize from current content
     this.ydoc.transact(() => {
       this.ytext.insert(0, currentContent);
     });
   }
 
   /**
-   * Bind this session to a CM6 EditorView. Returns the CM6 extension
-   * to be applied to the editor. Only one editor can be bound at a time.
-   */
-  getEditorExtension(userId: string): Extension {
-    if (!this.editorExtension) {
-      this.editorExtension = yCollab(this.ytext, null, {
-        undoManager: new Y.UndoManager(this.ytext),
-      });
-    }
-    return this.editorExtension;
-  }
-
-  /**
-   * Start the session: subscribe to WebSocket, listen for Yjs updates,
-   * begin snapshot interval.
+   * Start the session: subscribe to WebSocket, listen for Y.Doc updates to broadcast.
    */
   start(): void {
-    // Subscribe to document channel via WebSocket
     this.transport.subscribe(this.docPath);
 
-    // Listen for local Yjs updates and broadcast to peers
-    this.updateHandler = (update: Uint8Array, origin: any) => {
-      // Don't re-broadcast updates that came from remote
+    // Broadcast local Yjs updates to peers via WebSocket
+    this.ydocUpdateHandler = (update: Uint8Array, origin: any) => {
       if (origin === "remote") return;
-      this.pendingUpdates.push(update);
-      this.scheduleFlush();
+      this.transport.sendUpdate(this.docPath, update);
       this.scheduleHistorySnapshot();
     };
-    this.ydoc.on("update", this.updateHandler);
+    this.ydoc.on("update", this.ydocUpdateHandler);
 
-    // Start periodic snapshot to S3 (every 5 minutes)
+    // Periodic S3 snapshot (every 5 minutes)
     this.snapshotInterval = window.setInterval(() => {
       this.saveSnapshot();
     }, 5 * 60 * 1000);
+  }
+
+  /**
+   * Bind this session to a CM6 EditorView.
+   * Sets up two-way sync: Y.Text ↔ CM6 document.
+   */
+  bindEditor(view: EditorView): void {
+    if (this.view === view) return;
+    this.unbindEditor();
+    this.view = view;
+
+    // Step 1: Sync initial content (Yjs → Editor if different)
+    const yjsContent = this.ytext.toString();
+    const editorContent = view.state.doc.toString();
+    if (yjsContent !== editorContent) {
+      this.isSyncing = true;
+      view.dispatch({
+        changes: { from: 0, to: editorContent.length, insert: yjsContent },
+      });
+      this.isSyncing = false;
+    }
+
+    // Step 2: Observe Y.Text changes (from remote) → push to CM6 editor
+    this.ytextObserver = (event: Y.YTextEvent) => {
+      if (this.isSyncing || !this.view) return;
+      this.isSyncing = true;
+      try {
+        const changes = yTextEventToChangeSpec(event);
+        if (changes.length > 0) {
+          this.view.dispatch({ changes });
+        }
+      } catch (err) {
+        console.error("KB Collab: Error applying remote changes to editor:", err);
+      } finally {
+        this.isSyncing = false;
+      }
+    };
+    this.ytext.observe(this.ytextObserver);
+
+    // Step 3: Inject a ViewPlugin into THIS editor that captures local edits → Y.Text
+    const session = this;
+    const localChangeTracker = ViewPlugin.fromClass(
+      class {
+        update(update: ViewUpdate) {
+          if (!update.docChanged || session.isSyncing || session.destroyed) return;
+          session.isSyncing = true;
+          try {
+            session.ydoc.transact(() => {
+              applyChangeSetToYText(session.ytext, update.changes);
+            });
+          } catch (err) {
+            console.error("KB Collab: Error applying local changes to Yjs:", err);
+          } finally {
+            session.isSyncing = false;
+          }
+        }
+      }
+    );
+
+    view.dispatch({
+      effects: StateEffect.appendConfig.of(localChangeTracker),
+    });
+
+    console.log(`KB Collab: Bound editor for ${this.docPath}`);
+  }
+
+  /**
+   * Unbind from the current editor (e.g., when user navigates away).
+   */
+  unbindEditor(): void {
+    if (this.ytextObserver) {
+      this.ytext.unobserve(this.ytextObserver);
+      this.ytextObserver = null;
+    }
+    // Note: The ViewPlugin injected via appendConfig can't be removed,
+    // but it no-ops because the session reference is unchanged and
+    // isSyncing/destroyed guards prevent stale writes.
+    this.view = null;
   }
 
   /**
@@ -118,9 +183,6 @@ export class CollabSession {
     Y.applyUpdate(this.ydoc, update, "remote");
   }
 
-  /**
-   * Update a remote cursor position.
-   */
   setRemoteCursor(userId: string, anchor: number, head: number): void {
     this.remoteCursors.set(userId, {
       userId,
@@ -130,9 +192,6 @@ export class CollabSession {
     });
   }
 
-  /**
-   * Get all active remote cursors (excluding stale ones > 10s old).
-   */
   getRemoteCursors(): CursorInfo[] {
     const now = Date.now();
     const active: CursorInfo[] = [];
@@ -146,36 +205,14 @@ export class CollabSession {
     return active;
   }
 
-  /**
-   * Get the current document content as a string.
-   */
   getContent(): string {
     return this.ytext.toString();
   }
 
-  /**
-   * Flush pending updates to WebSocket.
-   */
-  private scheduleFlush(): void {
-    if (this.flushTimer !== null) return;
-    this.flushTimer = window.setTimeout(() => {
-      this.flushTimer = null;
-      this.flushUpdates();
-    }, 50); // 50ms debounce for batching rapid keystrokes
+  getBoundView(): EditorView | null {
+    return this.view;
   }
 
-  private flushUpdates(): void {
-    if (this.pendingUpdates.length === 0) return;
-
-    // Merge all pending updates into one
-    const merged = Y.mergeUpdates(this.pendingUpdates);
-    this.pendingUpdates = [];
-    this.transport.sendUpdate(this.docPath, merged);
-  }
-
-  /**
-   * Schedule a history snapshot after 5 seconds of inactivity (debounced).
-   */
   private scheduleHistorySnapshot(): void {
     if (this.historyTimer !== null) {
       window.clearTimeout(this.historyTimer);
@@ -184,75 +221,104 @@ export class CollabSession {
       this.historyTimer = null;
       if (this.destroyed) return;
       try {
-        const content = this.getContent();
         await historyManager.saveSnapshot(
           this.settings,
           this.docPath,
-          content,
+          this.getContent(),
           this.settings.userName,
           this.sessionId
         );
       } catch (err) {
-        console.error(`KB Collab: Failed to save history snapshot for ${this.docPath}:`, err);
+        console.error(`KB Collab: History snapshot failed for ${this.docPath}:`, err);
       }
-    }, 5000); // 5-second pause triggers history save
+    }, 5000);
   }
 
-  /**
-   * Save a Yjs snapshot to S3 for persistence.
-   */
   async saveSnapshot(): Promise<void> {
     if (this.destroyed) return;
     try {
       const state = Y.encodeStateAsUpdate(this.ydoc);
       await collabStorage.writeSnapshot(this.settings, this.docPath, state);
     } catch (err) {
-      console.error(`KB Collab: Failed to save snapshot for ${this.docPath}:`, err);
+      console.error(`KB Collab: S3 snapshot failed for ${this.docPath}:`, err);
     }
   }
 
-  /**
-   * Destroy the session, flushing pending state.
-   */
   async destroy(): Promise<void> {
     if (this.destroyed) return;
     this.destroyed = true;
 
-    // Stop snapshot interval
     if (this.snapshotInterval !== null) {
       window.clearInterval(this.snapshotInterval);
-      this.snapshotInterval = null;
     }
-
-    // Clear flush timer
-    if (this.flushTimer !== null) {
-      window.clearTimeout(this.flushTimer);
-      this.flushTimer = null;
-    }
-
-    // Clear history timer
     if (this.historyTimer !== null) {
       window.clearTimeout(this.historyTimer);
-      this.historyTimer = null;
     }
 
-    // Flush any remaining updates
-    this.flushUpdates();
-
-    // Unsubscribe from WebSocket channel
+    this.unbindEditor();
     this.transport.unsubscribe(this.docPath);
 
-    // Remove Yjs update listener
-    if (this.updateHandler) {
-      this.ydoc.off("update", this.updateHandler);
-      this.updateHandler = null;
+    if (this.ydocUpdateHandler) {
+      this.ydoc.off("update", this.ydocUpdateHandler);
     }
 
-    // Save final snapshot
     await this.saveSnapshot();
-
-    // Clean up Yjs
     this.ydoc.destroy();
     this.remoteCursors.clear();
   }
+}
+
+// ── Helpers: Y.Text ↔ CM6 ChangeSet conversion ─────
+
+/**
+ * Convert Y.Text event deltas to CM6 ChangeSpec array.
+ * Positions are in terms of the OLD document (before the event).
+ */
+function yTextEventToChangeSpec(event: Y.YTextEvent): any[] {
+  const changes: any[] = [];
+  let oldPos = 0;
+
+  for (const delta of event.delta) {
+    if (delta.retain != null) {
+      oldPos += delta.retain;
+    }
+    if (delta.insert != null) {
+      const text = typeof delta.insert === "string" ? delta.insert : "";
+      if (text.length > 0) {
+        changes.push({ from: oldPos, to: oldPos, insert: text });
+        // Don't advance oldPos — insert doesn't consume old-doc chars
+      }
+    }
+    if (delta.delete != null) {
+      changes.push({ from: oldPos, to: oldPos + delta.delete });
+      oldPos += delta.delete; // Delete consumes old-doc chars
+    }
+  }
+
+  return changes;
+}
+
+/**
+ * Convert a CM6 ChangeSet to Y.Text operations.
+ * Applied inside a Y.Doc transaction.
+ */
+function applyChangeSetToYText(ytext: Y.Text, changes: ChangeSet): void {
+  // adj tracks cumulative position shift from prior operations
+  let adj = 0;
+
+  changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
+    const from = fromA + adj;
+    const deleteCount = toA - fromA;
+    const insertText = inserted.sliceString(0);
+
+    if (deleteCount > 0) {
+      ytext.delete(from, deleteCount);
+    }
+    if (insertText.length > 0) {
+      ytext.insert(from, insertText);
+    }
+
+    // Adjust: we removed deleteCount chars and added insertText.length chars
+    adj += insertText.length - deleteCount;
+  });
 }

@@ -1,7 +1,9 @@
-import { ItemView, WorkspaceLeaf, setIcon } from "obsidian";
+import { ItemView, WorkspaceLeaf, Modal, setIcon } from "obsidian";
 import type KBSyncPlugin from "../main";
 import * as s3 from "../aws/s3-client";
 import type { S3ListItem } from "../aws/s3-client";
+import * as historyManager from "../collab/history-manager";
+import type { HistoryEntry } from "../collab/history-manager";
 
 export const VIEW_TYPE_KB_SYNC = "kb-sync-sidebar";
 
@@ -47,7 +49,7 @@ export interface Handoff {
   completionNotes: string | null;
 }
 
-type TabName = "files" | "activity" | "team" | "handoffs" | "chat";
+type TabName = "files" | "activity" | "team" | "handoffs" | "chat" | "history";
 
 export class KBSyncSidebarView extends ItemView {
   private plugin: KBSyncPlugin;
@@ -61,6 +63,8 @@ export class KBSyncSidebarView extends ItemView {
   private maxChatMessages = 100;
   private chatInputValue = "";
   private chatInputCursor = 0;
+  private historyEntries: Omit<HistoryEntry, "content">[] = [];
+  private historyDocPath: string | null = null;
 
   constructor(leaf: WorkspaceLeaf, plugin: KBSyncPlugin) {
     super(leaf);
@@ -113,12 +117,16 @@ export class KBSyncSidebarView extends ItemView {
     return this.activityLog;
   }
 
+  getPresenceData(): PresenceEntry[] {
+    return this.teamPresence;
+  }
+
   async refreshRemoteFiles(): Promise<void> {
     try {
       this.remoteFiles = await s3.listAllObjects(this.plugin.settings);
       // Filter out operational prefixes
       this.remoteFiles = this.remoteFiles.filter(
-        (f) => !f.key.startsWith("_handoffs/") && !f.key.startsWith("_presence/") && !f.key.startsWith("_chat/")
+        (f) => !f.key.startsWith("_handoffs/") && !f.key.startsWith("_presence/") && !f.key.startsWith("_chat/") && !f.key.startsWith("_collab/")
       );
       this.remoteFiles.sort((a, b) => a.key.localeCompare(b.key));
       if (this.activeTab === "files") {
@@ -280,6 +288,7 @@ export class KBSyncSidebarView extends ItemView {
       { id: "chat", label: "Chat" },
       { id: "handoffs", label: "Handoffs" },
       { id: "activity", label: "Activity" },
+      { id: "history", label: "History" },
     ];
 
     for (const tab of tabs) {
@@ -320,6 +329,7 @@ export class KBSyncSidebarView extends ItemView {
           // Ensure presence is loaded for @ autocomplete
           if (this.teamPresence.length === 0) this.refreshPresence();
         }
+        if (tab.id === "history") this.refreshHistory();
       });
     }
 
@@ -332,6 +342,7 @@ export class KBSyncSidebarView extends ItemView {
       case "team": this.renderTeam(body); break;
       case "handoffs": this.renderHandoffs(body); break;
       case "chat": this.renderChat(body); break;
+      case "history": this.renderHistory(body); break;
     }
   }
 
@@ -1149,6 +1160,172 @@ export class KBSyncSidebarView extends ItemView {
     }
   }
 
+  // ── History Tab ──────────────────────────────────────
+
+  async refreshHistory(): Promise<void> {
+    const activeFile = this.app.workspace.getActiveFile();
+    const syncFolder = this.plugin.settings.syncFolderPath;
+
+    if (!activeFile || !activeFile.path.startsWith(syncFolder + "/")) {
+      this.historyDocPath = null;
+      this.historyEntries = [];
+      if (this.activeTab === "history") this.render();
+      return;
+    }
+
+    const docPath = activeFile.path.replace(syncFolder + "/", "");
+    this.historyDocPath = docPath;
+
+    try {
+      this.historyEntries = await historyManager.listSnapshots(
+        this.plugin.settings,
+        docPath
+      );
+      if (this.activeTab === "history") this.render();
+    } catch {
+      this.historyEntries = [];
+      if (this.activeTab === "history") this.render();
+    }
+  }
+
+  private renderHistory(container: HTMLElement): void {
+    if (!this.historyDocPath) {
+      const empty = container.createDiv({ cls: "kb-sync-history-empty" });
+      empty.setText("Open a knowledge base file to view its edit history.");
+      return;
+    }
+
+    // Header
+    const header = container.createDiv({ cls: "kb-sync-history-header" });
+    const iconEl = header.createSpan({ cls: "kb-sync-tree-icon" });
+    setIcon(iconEl, "file-text");
+    header.createSpan({
+      text: this.historyDocPath,
+      cls: "kb-sync-history-doc-name",
+    });
+
+    // Refresh button
+    const refreshBtn = header.createEl("button", {
+      cls: "kb-sync-toolbar-btn",
+      attr: { "aria-label": "Refresh history" },
+    });
+    setIcon(refreshBtn, "refresh-cw");
+    refreshBtn.addEventListener("click", () => this.refreshHistory());
+
+    if (this.historyEntries.length === 0) {
+      const empty = container.createDiv({ cls: "kb-sync-history-empty" });
+      empty.setText("No edit history yet for this document.");
+      return;
+    }
+
+    // Group by session
+    const sessions = this.groupBySession(this.historyEntries);
+    const list = container.createDiv({ cls: "kb-sync-history-list" });
+
+    for (const session of sessions) {
+      const sessionEl = list.createDiv({ cls: "kb-sync-history-session" });
+
+      // Session header
+      const sessionHeader = sessionEl.createDiv({ cls: "kb-sync-history-session-header" });
+      const firstEntry = session[0];
+      sessionHeader.createSpan({
+        text: this.formatHistoryTime(firstEntry.timestamp),
+        cls: "kb-sync-history-session-time",
+      });
+
+      // Entries in this session
+      for (let i = 0; i < session.length; i++) {
+        const entry = session[i];
+        const entryEl = sessionEl.createDiv({ cls: "kb-sync-history-entry" });
+
+        // User dot
+        const colorIdx = this.hashUserColor(entry.userId);
+        entryEl.createSpan({
+          cls: `kb-sync-presence-dot kb-sync-dot-color-${colorIdx}`,
+        });
+
+        // User name
+        entryEl.createSpan({
+          text: entry.userId,
+          cls: "kb-sync-history-user",
+        });
+
+        // Time
+        entryEl.createSpan({
+          text: this.formatTimeShort(entry.timestamp),
+          cls: "kb-sync-history-time",
+        });
+
+        // Size delta
+        const prevLength = i + 1 < session.length ? session[i + 1].contentLength : 0;
+        const delta = entry.contentLength - prevLength;
+        if (prevLength > 0) {
+          const deltaText = delta >= 0 ? `+${delta}` : `${delta}`;
+          const deltaCls = delta >= 0 ? "kb-sync-history-delta-pos" : "kb-sync-history-delta-neg";
+          entryEl.createSpan({
+            text: `${deltaText} chars`,
+            cls: `kb-sync-history-delta ${deltaCls}`,
+          });
+        } else {
+          entryEl.createSpan({
+            text: `${entry.contentLength} chars`,
+            cls: "kb-sync-history-delta",
+          });
+        }
+
+        // Click to view/restore
+        entryEl.addEventListener("click", async () => {
+          const full = await historyManager.loadSnapshot(
+            this.plugin.settings,
+            this.historyDocPath!,
+            entry.id
+          );
+          if (full) {
+            new HistoryPreviewModal(this.app, this.plugin, full).open();
+          }
+        });
+        entryEl.style.cursor = "pointer";
+      }
+    }
+  }
+
+  private groupBySession(
+    entries: Omit<HistoryEntry, "content">[]
+  ): Omit<HistoryEntry, "content">[][] {
+    const groups: Omit<HistoryEntry, "content">[][] = [];
+    let current: Omit<HistoryEntry, "content">[] = [];
+    let currentSession = "";
+
+    for (const entry of entries) {
+      if (entry.sessionId !== currentSession) {
+        if (current.length > 0) groups.push(current);
+        current = [entry];
+        currentSession = entry.sessionId;
+      } else {
+        current.push(entry);
+      }
+    }
+    if (current.length > 0) groups.push(current);
+    return groups;
+  }
+
+  private formatHistoryTime(iso: string): string {
+    const d = new Date(iso);
+    const now = new Date();
+    const diffMs = now.getTime() - d.getTime();
+    const diffMin = Math.floor(diffMs / 60000);
+
+    if (diffMin < 1) return "Just now";
+    if (diffMin < 60) return `${diffMin} minutes ago`;
+    if (diffMin < 1440) return `${Math.floor(diffMin / 60)} hours ago`;
+    if (diffMin < 2880) return "Yesterday";
+    return d.toLocaleDateString(undefined, {
+      month: "short",
+      day: "numeric",
+      year: d.getFullYear() !== now.getFullYear() ? "numeric" : undefined,
+    });
+  }
+
   private formatTime(iso: string): string {
     const d = new Date(iso);
     const now = new Date();
@@ -1159,5 +1336,73 @@ export class KBSyncSidebarView extends ItemView {
     if (diffMin < 60) return `${diffMin}m ago`;
     if (diffMin < 1440) return `${Math.floor(diffMin / 60)}h ago`;
     return d.toLocaleDateString();
+  }
+}
+
+// ── History Preview Modal ────────────────────────────
+
+class HistoryPreviewModal extends Modal {
+  private plugin: KBSyncPlugin;
+  private entry: HistoryEntry;
+
+  constructor(app: any, plugin: KBSyncPlugin, entry: HistoryEntry) {
+    super(app);
+    this.plugin = plugin;
+    this.entry = entry;
+  }
+
+  onOpen(): void {
+    const { contentEl } = this;
+    contentEl.addClass("kb-sync-history-modal");
+
+    // Header
+    const header = contentEl.createDiv({ cls: "kb-sync-history-modal-header" });
+    header.createEl("h3", {
+      text: `Version by ${this.entry.userId}`,
+    });
+    header.createDiv({
+      text: new Date(this.entry.timestamp).toLocaleString(),
+      cls: "kb-sync-history-modal-time",
+    });
+    header.createDiv({
+      text: `${this.entry.contentLength} characters`,
+      cls: "kb-sync-history-modal-meta",
+    });
+
+    // Content preview
+    const preview = contentEl.createEl("textarea", {
+      cls: "kb-sync-history-modal-content",
+    });
+    preview.value = this.entry.content;
+    preview.readOnly = true;
+
+    // Restore button
+    const actions = contentEl.createDiv({ cls: "kb-sync-history-modal-actions" });
+    const restoreBtn = actions.createEl("button", {
+      text: "Restore this version",
+      cls: "mod-cta",
+    });
+    restoreBtn.addEventListener("click", async () => {
+      await this.restoreVersion();
+      this.close();
+    });
+
+    const cancelBtn = actions.createEl("button", { text: "Cancel" });
+    cancelBtn.addEventListener("click", () => this.close());
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+  }
+
+  private async restoreVersion(): Promise<void> {
+    const syncFolder = this.plugin.settings.syncFolderPath;
+    const fullPath = `${syncFolder}/${this.entry.docPath}`;
+    const file = this.app.vault.getAbstractFileByPath(fullPath);
+    if (file) {
+      await this.app.vault.modify(file as any, this.entry.content);
+      const { Notice } = await import("obsidian");
+      new Notice(`Restored version from ${new Date(this.entry.timestamp).toLocaleString()}`);
+    }
   }
 }

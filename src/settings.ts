@@ -17,6 +17,8 @@ export interface KBSyncSettings {
   userName: string;
   presenceHeartbeatMinutes: number;
   statusMessage: string;
+  collaborationEnabled: boolean;
+  wsUrl: string;
 }
 
 export const DEFAULT_SETTINGS: KBSyncSettings = {
@@ -35,6 +37,8 @@ export const DEFAULT_SETTINGS: KBSyncSettings = {
   userName: "",
   presenceHeartbeatMinutes: 2,
   statusMessage: "",
+  collaborationEnabled: false,
+  wsUrl: "",
 };
 
 export class KBSyncSettingTab extends PluginSettingTab {
@@ -252,5 +256,116 @@ export class KBSyncSettingTab extends PluginSettingTab {
             }
           })
       );
+
+    // Live Collaboration
+    containerEl.createEl("h3", { text: "Live Collaboration" });
+
+    new Setting(containerEl)
+      .setName("Enable Live Collaboration")
+      .setDesc(
+        "Allow real-time co-editing with team members via WebSocket. " +
+        "Requires deploying the collab-stack CloudFormation template."
+      )
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.collaborationEnabled)
+          .onChange(async (value) => {
+            this.plugin.settings.collaborationEnabled = value;
+            await this.plugin.saveSettings();
+            this.display();
+          })
+      );
+
+    if (this.plugin.settings.collaborationEnabled) {
+      new Setting(containerEl)
+        .setName("WebSocket URL")
+        .setDesc(
+          "The wss:// URL from the CloudFormation stack output"
+        )
+        .addText((text) =>
+          text
+            .setPlaceholder("wss://xxx.execute-api.region.amazonaws.com/prod")
+            .setValue(this.plugin.settings.wsUrl)
+            .onChange(async (value) => {
+              this.plugin.settings.wsUrl = value;
+              await this.plugin.saveSettings();
+            })
+        );
+
+      // Latency check
+      const latencySetting = new Setting(containerEl)
+        .setName("Test Connection")
+        .setDesc("Check WebSocket connectivity and measure latency");
+
+      const resultEl = containerEl.createDiv({
+        cls: "kb-sync-latency-result",
+      });
+
+      latencySetting.addButton((button) =>
+        button
+          .setButtonText("Test")
+          .setCta()
+          .onClick(async () => {
+            const wsUrl = this.plugin.settings.wsUrl;
+            if (!wsUrl) {
+              resultEl.setText("No WebSocket URL configured.");
+              resultEl.style.color = "var(--text-error)";
+              return;
+            }
+
+            resultEl.setText("Connecting...");
+            resultEl.style.color = "var(--text-muted)";
+
+            try {
+              const latency = await this.measureLatency(wsUrl);
+              resultEl.setText(`Connected \u2014 latency: ${latency}ms`);
+              resultEl.style.color = "var(--color-green)";
+            } catch (err) {
+              resultEl.setText(
+                `Connection failed: ${(err as Error).message}`
+              );
+              resultEl.style.color = "var(--text-error)";
+            }
+          })
+      );
+    }
+  }
+
+  private measureLatency(wsUrl: string): Promise<number> {
+    return new Promise((resolve, reject) => {
+      const start = performance.now();
+      let settled = false;
+
+      const timeout = window.setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          ws.close();
+          reject(new Error("Connection timed out (5s)"));
+        }
+      }, 5000);
+
+      const ws = new WebSocket(wsUrl);
+
+      ws.onopen = () => {
+        const latency = Math.round(performance.now() - start);
+        settled = true;
+        clearTimeout(timeout);
+        // Send a test message to measure full round-trip
+        const pingStart = performance.now();
+        ws.send(JSON.stringify({ action: "ping" }));
+        // For WebSocket API Gateway, the connection itself proves connectivity.
+        // Use the connection time as latency since ping won't get a response.
+        ws.close();
+        resolve(latency);
+      };
+
+      ws.onerror = () => {
+        if (!settled) {
+          settled = true;
+          clearTimeout(timeout);
+          reject(new Error("WebSocket connection error"));
+        }
+      };
+    });
   }
 }

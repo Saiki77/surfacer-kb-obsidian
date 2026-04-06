@@ -72,10 +72,13 @@ export default class KBSyncPlugin extends Plugin {
       this.collabManager.isInCollabMode(path)
     );
 
-    // Global cursor decorations (reads from collabManager)
-    this.registerEditorExtension(
-      remoteCursorExtension(() => this.collabManager.getAllRemoteCursors())
-    );
+    // Global CM6 extensions for collaboration (registered ONCE, never duplicated)
+    this.registerEditorExtension([
+      // Cursor decorations: renders remote user cursors
+      remoteCursorExtension(() => this.collabManager.getAllRemoteCursors()),
+      // Local change tracker: routes editor changes to the correct CollabSession
+      this.collabManager.getLocalChangeExtension(),
+    ]);
 
     // Scan editors on tab switch so collab sessions bind immediately
     this.registerEvent(

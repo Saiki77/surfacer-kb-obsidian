@@ -5,7 +5,9 @@
  */
 
 import { App, MarkdownView, TFile, normalizePath } from "obsidian";
-import type { EditorView } from "@codemirror/view";
+import { ViewPlugin, EditorView } from "@codemirror/view";
+import type { ViewUpdate, PluginValue } from "@codemirror/view";
+import type { Extension } from "@codemirror/state";
 import { CollabTransport } from "./collab-transport";
 import { CollabSession, type CursorInfo } from "./collab-session";
 import type { KBSyncSettings } from "../settings";
@@ -153,6 +155,31 @@ export class CollabManager {
         console.log(`KB Collab: Deactivated session for ${docPath}`);
       }
     }
+  }
+
+  /**
+   * Returns a global CM6 extension that routes local editor changes
+   * to the correct CollabSession. Registered ONCE via registerEditorExtension.
+   */
+  getLocalChangeExtension(): Extension {
+    const manager = this;
+    return ViewPlugin.fromClass(
+      class implements PluginValue {
+        update(update: ViewUpdate) {
+          if (!update.docChanged) return;
+          // Find the session for this editor
+          for (const [docPath, view] of manager.boundEditors) {
+            if (view === update.view) {
+              const session = manager.sessions.get(docPath);
+              if (session) {
+                session.handleLocalChanges(update.changes);
+              }
+              return;
+            }
+          }
+        }
+      }
+    );
   }
 
   /**

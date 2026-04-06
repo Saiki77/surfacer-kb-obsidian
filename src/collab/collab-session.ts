@@ -4,9 +4,7 @@
  */
 
 import * as Y from "yjs";
-import { ViewPlugin, EditorView } from "@codemirror/view";
-import type { ViewUpdate } from "@codemirror/view";
-import { StateEffect } from "@codemirror/state";
+import type { EditorView } from "@codemirror/view";
 import type { ChangeSet } from "@codemirror/state";
 import type { CollabTransport } from "./collab-transport";
 import type { KBSyncSettings } from "../settings";
@@ -116,14 +114,16 @@ export class CollabSession {
 
   /**
    * Bind this session to a CM6 EditorView.
-   * Sets up two-way sync: Y.Text ↔ CM6 document.
+   * Sets up: initial content sync + Y.Text observer (remote → CM6).
+   * Local changes (CM6 → Y.Text) are handled by the global ViewPlugin
+   * in CollabManager, NOT injected per-editor.
    */
   bindEditor(view: EditorView): void {
     if (this.view === view) return;
     this.unbindEditor();
     this.view = view;
 
-    // Step 1: Sync initial content (Yjs → Editor if different)
+    // Sync initial content (Yjs → Editor if different)
     const yjsContent = this.ytext.toString();
     const editorContent = view.state.doc.toString();
     if (yjsContent !== editorContent) {
@@ -134,7 +134,7 @@ export class CollabSession {
       this.isSyncing = false;
     }
 
-    // Step 2: Observe Y.Text changes (from remote) → push to CM6 editor
+    // Observe Y.Text changes (from remote updates) → push to CM6 editor
     this.ytextObserver = (event: Y.YTextEvent) => {
       if (this.isSyncing || !this.view) return;
       this.isSyncing = true;
@@ -151,31 +151,25 @@ export class CollabSession {
     };
     this.ytext.observe(this.ytextObserver);
 
-    // Step 3: Inject a ViewPlugin into THIS editor that captures local edits → Y.Text
-    const session = this;
-    const localChangeTracker = ViewPlugin.fromClass(
-      class {
-        update(update: ViewUpdate) {
-          if (!update.docChanged || session.isSyncing || session.destroyed) return;
-          session.isSyncing = true;
-          try {
-            session.ydoc.transact(() => {
-              applyChangeSetToYText(session.ytext, update.changes);
-            });
-          } catch (err) {
-            console.error("KB Collab: Error applying local changes to Yjs:", err);
-          } finally {
-            session.isSyncing = false;
-          }
-        }
-      }
-    );
-
-    view.dispatch({
-      effects: StateEffect.appendConfig.of(localChangeTracker),
-    });
-
     console.log(`KB Collab: Bound editor for ${this.docPath}`);
+  }
+
+  /**
+   * Called by the global ViewPlugin when this editor has local changes.
+   * Applies CM6 ChangeSet to Y.Text.
+   */
+  handleLocalChanges(changes: ChangeSet): void {
+    if (this.isSyncing || this.destroyed) return;
+    this.isSyncing = true;
+    try {
+      this.ydoc.transact(() => {
+        applyChangeSetToYText(this.ytext, changes);
+      });
+    } catch (err) {
+      console.error("KB Collab: Error applying local changes to Yjs:", err);
+    } finally {
+      this.isSyncing = false;
+    }
   }
 
   /**

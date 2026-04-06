@@ -50,40 +50,55 @@ export class CollabSession {
   }
 
   /**
-   * Initialize the Yjs document from current editor content.
-   * If a snapshot exists in S3, load it; otherwise use the provided content.
+   * Initialize the Yjs document. CRITICAL: all peers must share the same
+   * Y.Doc origin, otherwise Yjs merges cause content duplication.
+   *
+   * Flow:
+   * 1. Try loading shared snapshot from S3 (created by the first peer)
+   * 2. If found → use it as shared origin
+   * 3. If NOT found → I'm the first peer; init from content and save immediately
    */
   async initialize(currentContent: string): Promise<void> {
+    // Step 1: Try to load existing shared Y.Doc state from S3
+    let snapshot: Uint8Array | null = null;
     try {
-      const snapshot = await collabStorage.readSnapshot(this.settings, this.docPath);
-      if (snapshot) {
-        Y.applyUpdate(this.ydoc, snapshot);
-        // If snapshot diverged from local, use local as authoritative
-        if (this.ytext.toString() !== currentContent) {
-          this.ydoc.transact(() => {
-            this.ytext.delete(0, this.ytext.length);
-            this.ytext.insert(0, currentContent);
-          });
-        }
-        return;
-      }
+      snapshot = await collabStorage.readSnapshot(this.settings, this.docPath);
     } catch {
-      // No snapshot available
+      // S3 unavailable — fall through to local init
     }
 
-    // Initialize from current content
+    if (snapshot) {
+      // Shared state exists — load it (shared origin with other peers)
+      Y.applyUpdate(this.ydoc, snapshot);
+      console.log(`KB Collab: Loaded shared snapshot for ${this.docPath}`);
+      return;
+    }
+
+    // Step 2: No shared state — I'm the first peer
+    console.log(`KB Collab: First peer for ${this.docPath}, creating shared state`);
     this.ydoc.transact(() => {
       this.ytext.insert(0, currentContent);
     });
+
+    // Save immediately so the next peer loads our state (shared origin)
+    await this.saveSnapshot();
   }
 
   /**
-   * Start the session: subscribe to WebSocket, listen for Y.Doc updates to broadcast.
+   * Start the session: subscribe to WebSocket, broadcast full state for sync,
+   * listen for ongoing updates.
    */
   start(): void {
     this.transport.subscribe(this.docPath);
 
-    // Broadcast local Yjs updates to peers via WebSocket
+    // Broadcast full state to any existing peers so they sync with us.
+    // This is safe because all peers share the same Y.Doc origin (from S3 snapshot).
+    // Yjs handles duplicate/redundant state gracefully.
+    const fullState = Y.encodeStateAsUpdate(this.ydoc);
+    this.transport.sendUpdate(this.docPath, fullState);
+    console.log(`KB Collab: Broadcast full state for ${this.docPath} (${fullState.length} bytes)`);
+
+    // Broadcast incremental Yjs updates to peers via WebSocket
     this.ydocUpdateHandler = (update: Uint8Array, origin: any) => {
       if (origin === "remote") return;
       this.transport.sendUpdate(this.docPath, update);
@@ -177,10 +192,28 @@ export class CollabSession {
 
   /**
    * Apply a remote Yjs update received via WebSocket.
+   * Includes a duplication guard for the rare race where two peers
+   * initialize independently (before either's snapshot reaches S3).
    */
   applyRemoteUpdate(update: Uint8Array): void {
     if (this.destroyed) return;
+    const lengthBefore = this.ytext.length;
     Y.applyUpdate(this.ydoc, update, "remote");
+    const lengthAfter = this.ytext.length;
+
+    // Duplication guard: if content more than doubled, two peers likely
+    // initialized independently. Reset to the pre-update content.
+    if (lengthBefore > 10 && lengthAfter > lengthBefore * 1.8) {
+      console.warn(
+        `KB Collab: Content duplication detected for ${this.docPath} ` +
+        `(${lengthBefore} → ${lengthAfter}). Resetting.`
+      );
+      const originalContent = this.ytext.toString().slice(0, lengthBefore);
+      this.ydoc.transact(() => {
+        this.ytext.delete(0, this.ytext.length);
+        this.ytext.insert(0, originalContent);
+      });
+    }
   }
 
   setRemoteCursor(userId: string, anchor: number, head: number): void {

@@ -49,7 +49,7 @@ export interface Handoff {
   completionNotes: string | null;
 }
 
-type TabName = "files" | "activity" | "team" | "handoffs" | "chat" | "history";
+type TabName = "files" | "team" | "handoffs" | "chat" | "history";
 
 export class KBSyncSidebarView extends ItemView {
   private plugin: KBSyncPlugin;
@@ -353,7 +353,6 @@ export class KBSyncSidebarView extends ItemView {
       { id: "team", label: "Team" },
       { id: "chat", label: "Chat" },
       { id: "handoffs", label: "Handoffs" },
-      { id: "activity", label: "Activity" },
       { id: "history", label: "History" },
     ];
 
@@ -412,7 +411,6 @@ export class KBSyncSidebarView extends ItemView {
     try {
       switch (this.activeTab) {
         case "files": this.renderFiles(body); break;
-        case "activity": this.renderActivity(body); break;
         case "team": this.renderTeam(body); break;
         case "handoffs": this.renderHandoffs(body); break;
         case "chat": this.renderChat(body); break;
@@ -565,10 +563,36 @@ export class KBSyncSidebarView extends ItemView {
       }
     });
 
-    if (this.teamPresence.length === 0) {
+    // Get live collab users (from WebSocket cursor data)
+    const liveUsers = new Set<string>();
+    const collabManager = this.plugin.collabManager;
+    if (collabManager) {
+      for (const docPath of collabManager.getActiveSessionPaths()) {
+        for (const u of collabManager.getActiveCollaborators(docPath)) {
+          liveUsers.add(u);
+        }
+      }
+    }
+
+    // Connection status banner
+    const isCollabEnabled = this.plugin.settings.collaborationEnabled && this.plugin.settings.wsUrl;
+    if (isCollabEnabled) {
+      const connected = collabManager?.isConnected ?? false;
+      const connBanner = container.createDiv({
+        cls: `kb-sync-conn-banner ${connected ? "kb-sync-conn-ok" : "kb-sync-conn-err"}`,
+      });
+      connBanner.createSpan({
+        cls: connected ? "kb-sync-collab-live-dot" : "kb-sync-conn-err-dot",
+      });
+      connBanner.createSpan({
+        text: connected ? "Connected" : "Disconnected — edits won't sync",
+      });
+    }
+
+    if (this.teamPresence.length === 0 && liveUsers.size === 0) {
       container.createDiv({
         cls: "kb-sync-empty",
-        text: "No team presence data. Presence updates every few minutes.",
+        text: "No team members detected yet.",
       });
       return;
     }
@@ -576,24 +600,26 @@ export class KBSyncSidebarView extends ItemView {
     const now = Date.now();
     const activeTtl = 5 * 60 * 1000;
     const offlineTtl = 30 * 60 * 1000;
+
+    // Merge S3 presence with live cursor data
     const active = this.teamPresence.filter(
-      (p) => now - new Date(p.heartbeat).getTime() < activeTtl
+      (p) => liveUsers.has(p.user) || now - new Date(p.heartbeat).getTime() < activeTtl
     );
-    const recentlyActive = this.teamPresence.filter(
-      (p) => {
-        const age = now - new Date(p.heartbeat).getTime();
-        return age >= activeTtl && age < offlineTtl;
-      }
-    );
-    const offline = this.teamPresence.filter(
-      (p) => now - new Date(p.heartbeat).getTime() >= offlineTtl
-    );
+    const recentlyActive = this.teamPresence.filter((p) => {
+      if (liveUsers.has(p.user)) return false;
+      const age = now - new Date(p.heartbeat).getTime();
+      return age >= activeTtl && age < offlineTtl;
+    });
+    const offline = this.teamPresence.filter((p) => {
+      if (liveUsers.has(p.user)) return false;
+      return now - new Date(p.heartbeat).getTime() >= offlineTtl;
+    });
 
     const list = container.createDiv({ cls: "kb-sync-team-list" });
 
     if (active.length > 0) {
       for (const entry of active) {
-        this.renderPresenceCard(list, entry, "active");
+        this.renderPresenceCard(list, entry, liveUsers.has(entry.user) ? "active" : "active");
       }
     }
 

@@ -67,9 +67,16 @@
 
 .kb-sync-tab-bar {
   display: flex;
+  flex-wrap: nowrap;
+  overflow-x: auto;
   border-bottom: 1px solid var(--background-modifier-border);
-  padding: 0 8px;
+  padding: 0 4px;
   align-items: center;
+  scrollbar-width: none;
+}
+
+.kb-sync-tab-bar::-webkit-scrollbar {
+  display: none;
 }
 
 .kb-sync-pull-btn {
@@ -108,12 +115,14 @@
 }
 
 .kb-sync-tab {
-  padding: 8px 12px;
+  padding: 6px 8px;
   cursor: pointer;
-  font-size: 13px;
+  font-size: 12px;
   color: var(--text-muted);
   border-bottom: 2px solid transparent;
   transition: color 0.15s, border-color 0.15s;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .kb-sync-tab:hover {
@@ -1067,6 +1076,36 @@
   display: flex;
   gap: 8px;
   justify-content: flex-end;
+}
+
+/* ── Connection Banner ───────────────────────────────── */
+
+.kb-sync-conn-banner {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  border-radius: 4px;
+  margin: 6px 8px;
+}
+
+.kb-sync-conn-ok {
+  background: rgba(34, 197, 94, 0.1);
+  color: #22c55e;
+}
+
+.kb-sync-conn-err {
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--text-error);
+}
+
+.kb-sync-conn-err-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-error);
+  flex-shrink: 0;
 }
 
 /* ── Live Collaborator Bar ───────────────────────────── */

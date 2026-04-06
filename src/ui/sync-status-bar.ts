@@ -13,38 +13,39 @@ export class SyncStatusBar {
     status: SyncStatus,
     conflicts: number,
     queued: number,
-    onlineCount?: number
+    onlineCount?: number,
+    disconnected?: boolean
   ): void {
-    let text: string;
+    // Collab disconnected warning (highest priority)
+    if (disconnected) {
+      this.statusBarEl.setText("KB: Disconnected");
+      this.statusBarEl.style.color = "var(--text-error)";
+      return;
+    }
+
+    this.statusBarEl.style.color = "";
 
     // When collab is active, show online count
     if (onlineCount != null && onlineCount > 0) {
-      text = `KB: ${onlineCount} online`;
-      this.statusBarEl.setText(text);
+      this.statusBarEl.setText(`KB: ${onlineCount} online`);
       return;
     }
 
     switch (status) {
       case "pulling":
-        text = "KB: Pulling...";
+        this.statusBarEl.setText("KB: Pulling...");
         break;
       case "pushing":
-        text = "KB: Pushing...";
+        this.statusBarEl.setText("KB: Pushing...");
         break;
       case "offline":
-        text = `KB: Offline${queued > 0 ? ` (${queued} queued)` : ""}`;
+        this.statusBarEl.setText(`KB: Offline${queued > 0 ? ` (${queued} queued)` : ""}`);
         break;
       case "error":
-        text = "KB: Error";
+        this.statusBarEl.setText("KB: Error");
         break;
       default:
-        if (conflicts > 0) {
-          text = `KB: ${conflicts} conflict(s)`;
-        } else {
-          text = "KB: Synced";
-        }
+        this.statusBarEl.setText(conflicts > 0 ? `KB: ${conflicts} conflict(s)` : "KB: Synced");
     }
-
-    this.statusBarEl.setText(text);
   }
 }

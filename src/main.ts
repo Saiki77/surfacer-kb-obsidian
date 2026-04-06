@@ -264,16 +264,20 @@ export default class KBSyncPlugin extends Plugin {
         if (this.sidebarView) {
           this.sidebarView.refreshCollabState();
         }
-        // Update status bar with online count
-        const activeFile = this.app.workspace.getActiveFile();
-        const syncFolder = this.settings.syncFolderPath;
-        if (activeFile?.path?.startsWith(syncFolder + "/")) {
-          const docPath = activeFile.path.slice(syncFolder.length + 1);
-          const remoteUsers = this.collabManager?.getActiveCollaborators?.(docPath) ?? [];
-          const onlineCount = 1 + remoteUsers.length; // 1 = yourself
-          this.statusBar.update("idle", 0, 0, onlineCount);
+        // Update status bar with online count or disconnected warning
+        const connected = this.collabManager?.isConnected ?? false;
+        if (!connected) {
+          this.statusBar.update("idle", 0, 0, undefined, true);
         } else {
-          this.statusBar.update("idle", 0, 0, this.collabManager?.isConnected ? 1 : undefined);
+          const activeFile = this.app.workspace.getActiveFile();
+          const syncFolder = this.settings.syncFolderPath;
+          if (activeFile?.path?.startsWith(syncFolder + "/")) {
+            const docPath = activeFile.path.slice(syncFolder.length + 1);
+            const remoteUsers = this.collabManager?.getActiveCollaborators?.(docPath) ?? [];
+            this.statusBar.update("idle", 0, 0, 1 + remoteUsers.length);
+          } else {
+            this.statusBar.update("idle", 0, 0, 1);
+          }
         }
       }, 2000);
       this.registerInterval(this.collabPresenceIntervalId);

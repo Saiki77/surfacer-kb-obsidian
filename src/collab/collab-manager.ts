@@ -224,11 +224,11 @@ export class CollabManager {
   }
 
   /**
-   * Clean up everything.
+   * Clean up everything. Writes all collab content back to local files
+   * so no edits are lost when the app closes.
    */
   async destroy(): Promise<void> {
     this.destroyed = true;
-
     this.stopPolling();
 
     if (this.reconnectTimer !== null) {
@@ -236,7 +236,23 @@ export class CollabManager {
       this.reconnectTimer = null;
     }
 
-    for (const session of this.sessions.values()) {
+    const syncFolder = normalizePath(this.settings.syncFolderPath);
+
+    // Write each session's content back to the local vault file
+    for (const [docPath, session] of this.sessions) {
+      try {
+        const content = session.getContent();
+        const fullPath = normalizePath(`${syncFolder}/${docPath}`);
+        const file = this.app.vault.getAbstractFileByPath(fullPath);
+        if (file instanceof TFile) {
+          const currentContent = await this.app.vault.read(file);
+          if (currentContent !== content) {
+            await this.app.vault.modify(file, content);
+          }
+        }
+      } catch {
+        // Best effort — app is closing
+      }
       await session.destroy();
     }
     this.sessions.clear();

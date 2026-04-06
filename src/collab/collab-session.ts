@@ -280,7 +280,6 @@ export class CollabSession {
   }
 
   async saveSnapshot(): Promise<void> {
-    if (this.destroyed) return;
     try {
       const state = Y.encodeStateAsUpdate(this.ydoc);
       await collabStorage.writeSnapshot(this.settings, this.docPath, state);

@@ -1184,21 +1184,29 @@ export class KBSyncSidebarView extends ItemView {
     const docPath = activeFile.path.replace(syncFolder + "/", "");
     const myName = this.plugin.settings.userName;
 
-    // Get collaborators from WebSocket cursor data (instant, no S3 polling delay)
+    // Check if we have an active collab session for this file
+    const isInCollab = this.plugin.collabManager?.isInCollabMode?.(docPath) ?? false;
+    if (!isInCollab) return;
+
+    // Start with yourself (always show in live bar when collab is active)
+    const allUsers: string[] = myName ? [myName] : [];
+
+    // Add collaborators from WebSocket cursor data (instant)
     const cursorUsers: string[] = this.plugin.collabManager?.getActiveCollaborators?.(docPath) ?? [];
+    for (const u of cursorUsers) {
+      if (!allUsers.includes(u)) allUsers.push(u);
+    }
 
     // Also check S3 presence as fallback
     const now = Date.now();
-    const presenceUsers = this.teamPresence
-      .filter((p) => {
-        if (p.user === myName) return false;
-        if (now - new Date(p.heartbeat).getTime() > 5 * 60 * 1000) return false;
-        return p.openDocs.includes(docPath) || p.workingOn === docPath;
-      })
-      .map((p) => p.user);
+    for (const p of this.teamPresence) {
+      if (p.user === myName || allUsers.includes(p.user)) continue;
+      if (now - new Date(p.heartbeat).getTime() > 5 * 60 * 1000) continue;
+      if (p.openDocs.includes(docPath) || p.workingOn === docPath) {
+        allUsers.push(p.user);
+      }
+    }
 
-    // Merge both sources, deduplicate
-    const allUsers = [...new Set([...cursorUsers, ...presenceUsers])];
     if (allUsers.length === 0) return;
 
     const bar = contentEl.createDiv({ cls: "kb-sync-collab-bar" });

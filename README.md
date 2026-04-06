@@ -1,34 +1,34 @@
 # Knowledge Base S3 Sync for Obsidian
 
-Bidirectional sync between your Obsidian vault and an S3-backed knowledge base with **real-time live collaboration**. Built for small teams that want Google Docs-style co-editing, team presence, chat, version history, and hand-offs — all powered by AWS serverless infrastructure.
+Bidirectional sync between your Obsidian vault and an S3-backed knowledge base with **real-time live collaboration**. Built for small teams that want Google Docs-style co-editing, team presence, chat, version history, and hand-offs:all powered by AWS serverless infrastructure.
 
 ## Features
 
 ### Live Collaboration
-- **Real-time co-editing** — two or more people editing the same document simultaneously with automatic conflict-free merging via Yjs CRDT
-- **Remote cursors** — see where your teammates are typing with colored cursor indicators and name labels
-- **Live collaborator bar** — pulsing green indicator and user avatars when someone else is in your document
-- **Automatic activation** — collaboration starts the moment you open a synced file, no manual setup per document
-- **Graceful fallback** — if the WebSocket disconnects, edits are preserved locally and synced when reconnected
+- **Real-time co-editing**:two or more people editing the same document simultaneously with automatic conflict-free merging via Yjs CRDT
+- **Remote cursors**:see where your teammates are typing with colored cursor indicators and name labels
+- **Live collaborator bar**:pulsing green indicator and user avatars when someone else is in your document
+- **Automatic activation**:collaboration starts the moment you open a synced file, no manual setup per document
+- **Graceful fallback**:if the WebSocket disconnects, edits are preserved locally and synced when reconnected
 
 ### Version History
-- **Google Sheets-style history** — browse past versions of any document in the History sidebar tab
-- **Session grouping** — edits grouped by editing session, showing who made changes and when
-- **One-click restore** — preview any version and restore it with a single click
-- **Shared across team** — history stored in S3, visible to all team members
-- **Automatic capture** — snapshots saved on typing pauses (5s) during collaboration and on every sync push
+- **Google Sheets-style history**:browse past versions of any document in the History sidebar tab
+- **Session grouping**:edits grouped by editing session, showing who made changes and when
+- **One-click restore**:preview any version and restore it with a single click
+- **Shared across team**:history stored in S3, visible to all team members
+- **Automatic capture**:snapshots saved on typing pauses (5s) during collaboration and on every sync push
 
 ### Sync & Conflict Resolution
-- **Bidirectional S3 sync** — automatic pull/push with configurable intervals
-- **Conflict resolution** — side-by-side diff modal, or auto-resolve with prefer-local/prefer-remote
-- **Offline queue** — changes queued when offline and synced when back online
-- **Activity log** — full history of sync events grouped by day
+- **Bidirectional S3 sync**:automatic pull/push with configurable intervals
+- **Conflict resolution**:side-by-side diff modal, or auto-resolve with prefer-local/prefer-remote
+- **Offline queue**:changes queued when offline and synced when back online
+- **Activity log**:full history of sync events grouped by day
 
 ### Team Features
-- **Team presence** — see who's online, what they're editing, and their status
-- **Status updates** — set a short status message visible to your team
-- **Group chat** — lightweight team chat with @user and !file mentions and autocomplete
-- **Hand-offs** — structured work hand-offs with context, decisions, blockers, and next steps
+- **Team presence**:see who's online, what they're editing, and their status
+- **Status updates**:set a short status message visible to your team
+- **Group chat**:lightweight team chat with @user and !file mentions and autocomplete
+- **Hand-offs**:structured work hand-offs with context, decisions, blockers, and next steps
 
 ## Quick Start
 
@@ -158,7 +158,7 @@ Live Editing: Obsidian ←→ API Gateway WebSocket ←→ Lambda ←→ DynamoD
 
 ## Security
 
-- No credentials in source code — stored locally in Obsidian plugin data
+- No credentials in source code:stored locally in Obsidian plugin data
 - IAM policy grants minimum required S3 permissions
 - Consider enabling S3 bucket encryption (SSE-S3 or SSE-KMS)
 - Chat and presence data stored as plain JSON in S3

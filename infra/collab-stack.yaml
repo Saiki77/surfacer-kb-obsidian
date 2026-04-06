@@ -1,0 +1,301 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Live Collaboration WebSocket infrastructure for KB S3 Sync"
+
+Parameters:
+  StageName:
+    Type: String
+    Default: prod
+    Description: API Gateway stage name
+
+Resources:
+  # DynamoDB table for tracking WebSocket connections
+  ConnectionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-connections"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: connectionId
+          AttributeType: S
+        - AttributeName: docPath
+          AttributeType: S
+      KeySchema:
+        - AttributeName: connectionId
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: docPath-index
+          KeySchema:
+            - AttributeName: docPath
+              KeyType: HASH
+            - AttributeName: connectionId
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  # Lambda execution role
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DynamoDBAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                  - dynamodb:UpdateItem
+                Resource:
+                  - !GetAtt ConnectionsTable.Arn
+                  - !Sub "${ConnectionsTable.Arn}/index/*"
+        - PolicyName: ApiGatewayManageConnections
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - execute-api:ManageConnections
+                Resource:
+                  - !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/*"
+
+  # Lambda function
+  CollabHandler:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-handler"
+      Runtime: nodejs20.x
+      Handler: index.handler
+      Architectures:
+        - arm64
+      MemorySize: 128
+      Timeout: 10
+      Role: !GetAtt LambdaRole.Arn
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref ConnectionsTable
+      Code:
+        ZipFile: |
+          const { DynamoDBClient, PutItemCommand, DeleteItemCommand, QueryCommand } = require("@aws-sdk/client-dynamodb");
+          const { ApiGatewayManagementApiClient, PostToConnectionCommand } = require("@aws-sdk/client-apigatewaymanagementapi");
+
+          const ddb = new DynamoDBClient({});
+          const TABLE = process.env.TABLE_NAME;
+
+          exports.handler = async (event) => {
+            const { requestContext, body } = event;
+            const connectionId = requestContext.connectionId;
+            const routeKey = requestContext.routeKey;
+            const domain = requestContext.domainName;
+            const stage = requestContext.stage;
+            const endpoint = `https://${domain}/${stage}`;
+
+            try {
+              if (routeKey === "$connect") {
+                // Store connection with 24h TTL
+                const ttl = Math.floor(Date.now() / 1000) + 86400;
+                await ddb.send(new PutItemCommand({
+                  TableName: TABLE,
+                  Item: {
+                    connectionId: { S: connectionId },
+                    docPath: { S: "__unsubscribed__" },
+                    userId: { S: "" },
+                    connectedAt: { S: new Date().toISOString() },
+                    ttl: { N: String(ttl) },
+                  },
+                }));
+                return { statusCode: 200, body: "Connected" };
+              }
+
+              if (routeKey === "$disconnect") {
+                await ddb.send(new DeleteItemCommand({
+                  TableName: TABLE,
+                  Key: { connectionId: { S: connectionId } },
+                }));
+                return { statusCode: 200, body: "Disconnected" };
+              }
+
+              // Parse message body
+              const msg = JSON.parse(body);
+              const apigw = new ApiGatewayManagementApiClient({ endpoint });
+
+              if (msg.action === "subscribe") {
+                // Update connection with docPath and userId
+                const ttl = Math.floor(Date.now() / 1000) + 86400;
+                await ddb.send(new PutItemCommand({
+                  TableName: TABLE,
+                  Item: {
+                    connectionId: { S: connectionId },
+                    docPath: { S: msg.docPath },
+                    userId: { S: msg.userId || "" },
+                    connectedAt: { S: new Date().toISOString() },
+                    ttl: { N: String(ttl) },
+                  },
+                }));
+                return { statusCode: 200, body: "Subscribed" };
+              }
+
+              if (msg.action === "unsubscribe") {
+                // Reset to unsubscribed
+                const ttl = Math.floor(Date.now() / 1000) + 86400;
+                await ddb.send(new PutItemCommand({
+                  TableName: TABLE,
+                  Item: {
+                    connectionId: { S: connectionId },
+                    docPath: { S: "__unsubscribed__" },
+                    userId: { S: msg.userId || "" },
+                    connectedAt: { S: new Date().toISOString() },
+                    ttl: { N: String(ttl) },
+                  },
+                }));
+                return { statusCode: 200, body: "Unsubscribed" };
+              }
+
+              if (msg.action === "ping") {
+                // Echo back to sender for latency measurement — no DynamoDB needed
+                await apigw.send(new PostToConnectionCommand({
+                  ConnectionId: connectionId,
+                  Data: JSON.stringify({ action: "pong", ts: msg.ts }),
+                }));
+                return { statusCode: 200, body: "Pong" };
+              }
+
+              if (msg.action === "update" || msg.action === "cursor") {
+                // Broadcast to all connections on the same docPath, except sender
+                const result = await ddb.send(new QueryCommand({
+                  TableName: TABLE,
+                  IndexName: "docPath-index",
+                  KeyConditionExpression: "docPath = :dp",
+                  ExpressionAttributeValues: { ":dp": { S: msg.docPath } },
+                }));
+
+                const peers = (result.Items || []).filter(
+                  (item) => item.connectionId.S !== connectionId
+                );
+
+                const payload = JSON.stringify(msg);
+                const staleConnections = [];
+
+                await Promise.all(
+                  peers.map(async (peer) => {
+                    try {
+                      await apigw.send(new PostToConnectionCommand({
+                        ConnectionId: peer.connectionId.S,
+                        Data: payload,
+                      }));
+                    } catch (err) {
+                      if (err.statusCode === 410) {
+                        // Connection is gone, clean up
+                        staleConnections.push(peer.connectionId.S);
+                      }
+                    }
+                  })
+                );
+
+                // Clean up stale connections
+                await Promise.all(
+                  staleConnections.map((id) =>
+                    ddb.send(new DeleteItemCommand({
+                      TableName: TABLE,
+                      Key: { connectionId: { S: id } },
+                    }))
+                  )
+                );
+
+                return { statusCode: 200, body: "Broadcast complete" };
+              }
+
+              return { statusCode: 200, body: "Unknown action" };
+            } catch (err) {
+              console.error("Handler error:", err);
+              return { statusCode: 500, body: "Internal error" };
+            }
+          };
+
+  # WebSocket API
+  WebSocketApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub "${AWS::StackName}-ws"
+      ProtocolType: WEBSOCKET
+      RouteSelectionExpression: "$request.body.action"
+
+  # Lambda integration
+  LambdaIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WebSocketApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${CollabHandler.Arn}/invocations"
+
+  # Routes
+  ConnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebSocketApi
+      RouteKey: "$connect"
+      Target: !Sub "integrations/${LambdaIntegration}"
+
+  DisconnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebSocketApi
+      RouteKey: "$disconnect"
+      Target: !Sub "integrations/${LambdaIntegration}"
+
+  DefaultRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebSocketApi
+      RouteKey: "$default"
+      Target: !Sub "integrations/${LambdaIntegration}"
+
+  # Deployment and stage
+  Deployment:
+    Type: AWS::ApiGatewayV2::Deployment
+    DependsOn:
+      - ConnectRoute
+      - DisconnectRoute
+      - DefaultRoute
+    Properties:
+      ApiId: !Ref WebSocketApi
+
+  Stage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref WebSocketApi
+      StageName: !Ref StageName
+      DeploymentId: !Ref Deployment
+
+  # Lambda permission for API Gateway
+  LambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref CollabHandler
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/*"
+
+Outputs:
+  WebSocketUrl:
+    Description: "WebSocket URL for the collaboration endpoint"
+    Value: !Sub "wss://${WebSocketApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}"
+    Export:
+      Name: !Sub "${AWS::StackName}-ws-url"
+  ConnectionsTableName:
+    Description: "DynamoDB table name for connection tracking"
+    Value: !Ref ConnectionsTable

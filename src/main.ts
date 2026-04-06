@@ -3,6 +3,8 @@ import { KBSyncSettingTab, DEFAULT_SETTINGS, type KBSyncSettings } from "./setti
 import { SyncEngine, type SyncStatus } from "./sync/sync-engine";
 import { SyncStatusBar } from "./ui/sync-status-bar";
 import { KBSyncSidebarView, VIEW_TYPE_KB_SYNC, type ActivityEntry } from "./ui/sidebar-view";
+import { CollabManager } from "./collab/collab-manager";
+import { remoteCursorExtension } from "./collab/cursor-decorations";
 
 const SYNC_ICON = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/></svg>`;
 
@@ -18,10 +20,12 @@ export default class KBSyncPlugin extends Plugin {
   private syncEngine!: SyncEngine;
   private statusBar!: SyncStatusBar;
   private sidebarView: KBSyncSidebarView | null = null;
+  private collabManager!: CollabManager;
   private pullIntervalId: number | null = null;
   private pushIntervalId: number | null = null;
   private presenceIntervalId: number | null = null;
   private chatIntervalId: number | null = null;
+  private collabPresenceIntervalId: number | null = null;
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -60,6 +64,24 @@ export default class KBSyncPlugin extends Plugin {
           this.persistSyncData();
         }
       }
+    );
+
+    // Collaboration manager
+    this.collabManager = new CollabManager(this.app, this.settings);
+    this.syncEngine.setCollabChecker((path) =>
+      this.collabManager.isInCollabMode(path)
+    );
+
+    // Global cursor decorations (reads from collabManager)
+    this.registerEditorExtension(
+      remoteCursorExtension(() => this.collabManager.getAllRemoteCursors())
+    );
+
+    // Scan editors on tab switch so collab sessions bind immediately
+    this.registerEvent(
+      this.app.workspace.on("active-leaf-change", () => {
+        this.collabManager.scanAndBindEditors();
+      })
     );
 
     // Register sidebar view
@@ -145,6 +167,8 @@ export default class KBSyncPlugin extends Plugin {
           this.sidebarView.refreshHandoffs();
           this.sidebarView.refreshChat();
         }
+        // Start collaboration WebSocket if enabled
+        this.collabManager.connect();
       }, 3000);
     });
   }
@@ -162,6 +186,7 @@ export default class KBSyncPlugin extends Plugin {
 
   async onunload(): Promise<void> {
     this.clearIntervals();
+    await this.collabManager.destroy();
     await this.persistSyncData();
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_KB_SYNC);
   }
@@ -219,6 +244,17 @@ export default class KBSyncPlugin extends Plugin {
       }, 30 * 1000);
       this.registerInterval(this.chatIntervalId);
     }
+
+    // Collab presence refresh (faster when collaboration is active)
+    if (this.settings.collaborationEnabled && this.settings.wsUrl) {
+      this.collabPresenceIntervalId = window.setInterval(() => {
+        if (this.sidebarView) {
+          this.sidebarView.updatePresence();
+          this.sidebarView.refreshPresence();
+        }
+      }, 5000);
+      this.registerInterval(this.collabPresenceIntervalId);
+    }
   }
 
   private clearIntervals(): void {
@@ -238,6 +274,10 @@ export default class KBSyncPlugin extends Plugin {
       window.clearInterval(this.chatIntervalId);
       this.chatIntervalId = null;
     }
+    if (this.collabPresenceIntervalId !== null) {
+      window.clearInterval(this.collabPresenceIntervalId);
+      this.collabPresenceIntervalId = null;
+    }
   }
 
   async loadSettings(): Promise<void> {
@@ -248,6 +288,7 @@ export default class KBSyncPlugin extends Plugin {
   async saveSettings(): Promise<void> {
     await this.persistSyncData();
     this.syncEngine?.updateSettings(this.settings);
+    this.collabManager?.updateSettings(this.settings);
     this.startIntervals();
   }
 

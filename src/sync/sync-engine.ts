@@ -15,6 +15,7 @@ import {
   metadataToS3Headers,
 } from "../utils/metadata";
 import type { ActivityEntry } from "../ui/sidebar-view";
+import * as historyManager from "../collab/history-manager";
 
 export type SyncStatus =
   | "idle"
@@ -33,6 +34,7 @@ export class SyncEngine {
   private _conflictCount = 0;
   private onStatusChange: (status: SyncStatus, conflicts: number) => void;
   private onActivity: (entry: ActivityEntry) => void;
+  private collabChecker: ((path: string) => boolean) | null = null;
 
   constructor(
     app: App,
@@ -82,6 +84,14 @@ export class SyncEngine {
 
   updateSettings(settings: KBSyncSettings): void {
     this.settings = settings;
+  }
+
+  setCollabChecker(checker: (path: string) => boolean): void {
+    this.collabChecker = checker;
+  }
+
+  private isInCollabMode(path: string): boolean {
+    return this.collabChecker ? this.collabChecker(path) : false;
   }
 
   private setStatus(status: SyncStatus): void {
@@ -254,6 +264,7 @@ export class SyncEngine {
 
       // Pull: remote changed, local didn't
       for (const path of plan.pull) {
+        if (this.isInCollabMode(path)) continue; // Handled by collab session
         const { body } = await s3.getObject(this.settings, path);
         await this.writeLocalFile(path, body);
         const remote = remoteFiles.get(path)!;
@@ -266,6 +277,7 @@ export class SyncEngine {
 
       // New remote files
       for (const path of plan.newRemote) {
+        if (this.isInCollabMode(path)) continue;
         const { body } = await s3.getObject(this.settings, path);
         await this.writeLocalFile(path, body);
         const remote = remoteFiles.get(path)!;
@@ -286,6 +298,7 @@ export class SyncEngine {
       // Conflicts
       this._conflictCount = 0;
       for (const path of plan.conflicts) {
+        if (this.isInCollabMode(path)) continue; // CRDT handles merging
         await this.handleConflict(path, localFiles, remoteFiles);
       }
 
@@ -351,7 +364,9 @@ export class SyncEngine {
       );
 
       // Push: local changed, remote didn't
+      const pushSessionId = `${Date.now()}-sync`;
       for (const path of plan.push) {
+        if (this.isInCollabMode(path)) continue; // Handled by collab session
         const content = await this.readLocalFile(path);
         if (!content) continue;
         await this.pushToS3(path, content);
@@ -364,10 +379,21 @@ export class SyncEngine {
           )
         );
         this.logActivity("push", path, "Uploaded to remote");
+        // Save history snapshot
+        try {
+          await historyManager.saveSnapshot(
+            this.settings,
+            path,
+            content,
+            this.settings.userName || "system",
+            pushSessionId
+          );
+        } catch { /* History save is best-effort */ }
       }
 
       // New local files
       for (const path of plan.newLocal) {
+        if (this.isInCollabMode(path)) continue;
         const content = await this.readLocalFile(path);
         if (!content) continue;
         await this.pushToS3(path, content);

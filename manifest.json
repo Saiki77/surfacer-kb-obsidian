@@ -1,7 +1,7 @@
 {
   "id": "kb-s3-sync",
   "name": "Knowledge Base S3 Sync",
-  "version": "3.3.0",
+  "version": "3.3.1",
   "minAppVersion": "1.0.0",
   "description": "Bidirectional S3 sync with live collaboration, real-time co-editing, version history, and team features",
   "author": "Surfacer",

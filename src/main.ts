@@ -1,4 +1,4 @@
-import { Plugin, Notice, addIcon, TFile, TFolder, normalizePath } from "obsidian";
+import { Plugin, Notice, Modal, addIcon, TFile, TFolder, normalizePath } from "obsidian";
 import { KBSyncSettingTab, DEFAULT_SETTINGS, type KBSyncSettings } from "./settings";
 import { SyncEngine, type SyncStatus } from "./sync/sync-engine";
 import { SyncStatusBar } from "./ui/sync-status-bar";
@@ -208,7 +208,7 @@ export default class KBSyncPlugin extends Plugin {
         const docPath = file.path.slice(syncFolder.length + 1);
         const from = editor.posToOffset(editor.getCursor("from"));
         const to = editor.posToOffset(editor.getCursor("to"));
-        const text = prompt("Comment:");
+        const text = await this.promptInput("Add Comment", "Write your comment...");
         if (!text) return;
         const thread: commentStore.CommentThread = {
           id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
@@ -251,7 +251,7 @@ export default class KBSyncPlugin extends Plugin {
               const docPath = file.path.slice(syncFolder.length + 1);
               const from = editor.posToOffset(editor.getCursor("from"));
               const to = editor.posToOffset(editor.getCursor("to"));
-              const text = prompt("Comment:");
+              const text = await this.promptInput("Add Comment", "Write your comment...");
               if (!text) return;
               const thread: commentStore.CommentThread = {
                 id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
@@ -572,11 +572,17 @@ export default class KBSyncPlugin extends Plugin {
 
     try {
       const content = await this.app.vault.read(file);
-      const teamUsers = this.sidebarView?.getPresenceData()?.map((p) => p.user) ?? [];
+      // Build team user list from multiple sources
+      const userSet = new Set<string>();
+      for (const p of this.sidebarView?.getPresenceData() ?? []) userSet.add(p.user);
+      // Also add users from active collab cursors
+      for (const path of this.collabManager?.getActiveSessionPaths() ?? []) {
+        for (const u of this.collabManager?.getActiveCollaborators(path) ?? []) userSet.add(u);
+      }
+      const teamUsers = [...userSet];
       const mentioned = mentionStore.extractMentions(content, teamUsers);
-      // Get a context snippet (first 80 chars around the mention)
       for (const mentionedUser of mentioned) {
-        if (mentionedUser === user) continue; // Don't notify yourself
+        if (mentionedUser === user) continue;
         const idx = content.toLowerCase().indexOf(`@${mentionedUser.toLowerCase()}`);
         const start = Math.max(0, idx - 20);
         const end = Math.min(content.length, idx + mentionedUser.length + 60);
@@ -584,5 +590,79 @@ export default class KBSyncPlugin extends Plugin {
         await mentionStore.addMention(this.settings, mentionedUser, user, docPath, context);
       }
     } catch { /* best effort */ }
+  }
+
+  /**
+   * Show an Obsidian modal to get text input from the user.
+   */
+  promptInput(title: string, placeholder: string): Promise<string | null> {
+    return new Promise((resolve) => {
+      const modal = new InputModal(this.app, title, placeholder, resolve);
+      modal.open();
+    });
+  }
+}
+
+class InputModal extends Modal {
+  private title: string;
+  private placeholder: string;
+  private resolve: (value: string | null) => void;
+
+  constructor(
+    app: any,
+    title: string,
+    placeholder: string,
+    resolve: (value: string | null) => void
+  ) {
+    super(app);
+    this.title = title;
+    this.placeholder = placeholder;
+    this.resolve = resolve;
+  }
+
+  onOpen(): void {
+    const { contentEl } = this;
+    contentEl.createEl("h3", { text: this.title });
+    const input = contentEl.createEl("input", {
+      attr: { type: "text", placeholder: this.placeholder },
+    });
+    input.style.width = "100%";
+    input.style.padding = "8px";
+    input.style.marginBottom = "12px";
+    input.style.fontSize = "14px";
+    input.focus();
+
+    const btnBar = contentEl.createDiv();
+    btnBar.style.display = "flex";
+    btnBar.style.gap = "8px";
+    btnBar.style.justifyContent = "flex-end";
+
+    const submitBtn = btnBar.createEl("button", { text: "Add", cls: "mod-cta" });
+    const cancelBtn = btnBar.createEl("button", { text: "Cancel" });
+
+    submitBtn.addEventListener("click", () => {
+      const val = input.value.trim();
+      this.close();
+      this.resolve(val || null);
+    });
+    cancelBtn.addEventListener("click", () => {
+      this.close();
+      this.resolve(null);
+    });
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        const val = input.value.trim();
+        this.close();
+        this.resolve(val || null);
+      }
+      if (e.key === "Escape") {
+        this.close();
+        this.resolve(null);
+      }
+    });
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
   }
 }

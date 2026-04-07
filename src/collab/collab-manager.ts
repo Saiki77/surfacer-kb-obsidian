@@ -360,8 +360,13 @@ export class CollabManager {
     if (!this.transport?.connected) return;
 
     for (const [docPath, view] of this.boundEditors) {
-      if (!this.sessions.has(docPath)) continue;
+      const session = this.sessions.get(docPath);
+      if (!session) continue;
       try {
+        // Notify session when editor regains focus (applies queued changes)
+        if (view.hasFocus) {
+          session.onEditorFocus();
+        }
         const sel = view.state.selection.main;
         this.transport.sendCursor(docPath, sel.anchor, sel.head);
       } catch {

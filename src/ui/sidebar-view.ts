@@ -12,6 +12,10 @@ import * as readStore from "../reads/read-store";
 import type { DocReads } from "../reads/read-store";
 import * as mentionStore from "../mentions/mention-store";
 import type { MentionNotification } from "../mentions/mention-store";
+import * as reviewStore from "../reviews/review-store";
+import type { ReviewRequest } from "../reviews/review-store";
+import * as permissionStore from "../permissions/permission-store";
+import type { DocPermission } from "../permissions/permission-store";
 
 export const VIEW_TYPE_KB_SYNC = "kb-sync-sidebar";
 
@@ -80,6 +84,8 @@ export class KBSyncSidebarView extends ItemView {
   private templates: TemplateMeta[] = [];
   private allReads: Map<string, DocReads> = new Map();
   private myMentions: MentionNotification[] = [];
+  private allReviews: ReviewRequest[] = [];
+  private allPermissions: Map<string, DocPermission> = new Map();
 
   constructor(leaf: WorkspaceLeaf, plugin: KBSyncPlugin) {
     super(leaf);
@@ -426,7 +432,7 @@ export class KBSyncSidebarView extends ItemView {
       tabEl.addEventListener("click", () => {
         this.activeTab = tab.id;
         this.render();
-        if (tab.id === "files") { this.refreshRemoteFiles(); this.refreshStars(); this.refreshAllReads(); }
+        if (tab.id === "files") { this.refreshRemoteFiles(); this.refreshStars(); this.refreshAllReads(); this.refreshReviews(); this.refreshPermissions(); }
         if (tab.id === "team") { this.refreshPresence(); this.refreshMyMentions(); }
         if (tab.id === "handoffs") this.refreshHandoffs();
         if (tab.id === "chat") {
@@ -509,7 +515,11 @@ export class KBSyncSidebarView extends ItemView {
 
     const tree = this.buildFileTree(this.remoteFiles);
     const list = container.createDiv({ cls: "kb-sync-file-list" });
-    this.renderTree(list, tree, 0, starredPaths);
+    // Build review and permission lookup maps
+    const reviewMap = new Map<string, ReviewRequest>();
+    for (const r of this.allReviews) reviewMap.set(r.docPath, r);
+
+    this.renderTree(list, tree, 0, starredPaths, reviewMap, this.allPermissions);
   }
 
   private async showTemplatePicker(container: HTMLElement): Promise<void> {
@@ -590,6 +600,18 @@ export class KBSyncSidebarView extends ItemView {
     } catch { /* silently fail */ }
   }
 
+  async refreshReviews(): Promise<void> {
+    try {
+      this.allReviews = await reviewStore.loadAllReviews(this.plugin.settings);
+    } catch { /* silently fail */ }
+  }
+
+  async refreshPermissions(): Promise<void> {
+    try {
+      this.allPermissions = await permissionStore.loadAllPermissions(this.plugin.settings);
+    } catch { /* silently fail */ }
+  }
+
   private buildFileTree(
     files: S3ListItem[]
   ): Map<string, S3ListItem[] | Map<string, any>> {
@@ -614,7 +636,9 @@ export class KBSyncSidebarView extends ItemView {
     container: HTMLElement,
     tree: Map<string, any>,
     depth: number,
-    starredPaths?: Set<string>
+    starredPaths?: Set<string>,
+    reviewMap?: Map<string, ReviewRequest>,
+    permMap?: Map<string, DocPermission>
   ): void {
     const sortedKeys = Array.from(tree.keys()).sort((a, b) => {
       const aIsFolder = tree.get(a) instanceof Map;
@@ -633,7 +657,7 @@ export class KBSyncSidebarView extends ItemView {
         setIcon(iconEl, "folder");
         folderEl.createSpan({ text: key, cls: "kb-sync-tree-label" });
         const children = container.createDiv({ cls: "kb-sync-tree-children" });
-        this.renderTree(children, value, depth + 1, starredPaths);
+        this.renderTree(children, value, depth + 1, starredPaths, reviewMap, permMap);
         let collapsed = false;
         folderEl.addEventListener("click", () => {
           collapsed = !collapsed;
@@ -656,6 +680,26 @@ export class KBSyncSidebarView extends ItemView {
           e.stopPropagation();
           await this.toggleFileStar(file.key);
         });
+        // Review status badge
+        const review = reviewMap?.get(file.key);
+        if (review) {
+          const badgeCls = review.status === "approved" ? "kb-sync-review-approved"
+            : review.status === "rejected" ? "kb-sync-review-rejected"
+            : review.status === "changes-requested" ? "kb-sync-review-changes"
+            : "kb-sync-review-pending";
+          const badgeText = review.status === "approved" ? "\u2713"
+            : review.status === "rejected" ? "\u2717"
+            : review.status === "changes-requested" ? "\u21BA"
+            : "\u25CF";
+          fileEl.createSpan({ cls: `kb-sync-review-badge ${badgeCls}`, text: badgeText });
+        }
+
+        // Permission lock icon
+        const perm = permMap?.get(file.key);
+        if (perm && perm.mode === "view-only") {
+          fileEl.createSpan({ cls: "kb-sync-perm-lock", text: "\uD83D\uDD12" });
+        }
+
         // Read receipt count
         const reads = this.allReads.get(file.key);
         if (reads && reads.readers.length > 0) {

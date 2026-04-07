@@ -8,6 +8,8 @@ import { remoteCursorExtension } from "./collab/cursor-decorations";
 import * as templateStore from "./templates/template-store";
 import * as readStore from "./reads/read-store";
 import * as mentionStore from "./mentions/mention-store";
+import * as reviewStore from "./reviews/review-store";
+import * as permissionStore from "./permissions/permission-store";
 
 const SYNC_ICON = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/></svg>`;
 
@@ -148,6 +150,31 @@ export default class KBSyncPlugin extends Plugin {
           this.settings.userName
         );
         new Notice(`Saved "${name}" as a template.`);
+      },
+    });
+
+    this.addCommand({
+      id: "toggle-lock",
+      name: "Toggle document lock (view-only / editable)",
+      callback: async () => {
+        const file = this.app.workspace.getActiveFile();
+        const syncFolder = normalizePath(this.settings.syncFolderPath);
+        if (!file || !file.path.startsWith(syncFolder + "/")) {
+          new Notice("Open a knowledge base file first.");
+          return;
+        }
+        const docPath = file.path.slice(syncFolder.length + 1);
+        const existing = await permissionStore.loadPermission(this.settings, docPath);
+        if (existing && existing.mode === "view-only") {
+          await permissionStore.removePermission(this.settings, docPath);
+          new Notice(`Unlocked: ${file.basename}`);
+        } else {
+          await permissionStore.setPermission(
+            this.settings, docPath, this.settings.userName,
+            "view-only", this.settings.userName
+          );
+          new Notice(`Locked: ${file.basename} (view-only for others)`);
+        }
       },
     });
 

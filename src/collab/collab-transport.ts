@@ -8,6 +8,7 @@ type CursorHandler = (docPath: string, userId: string, anchor: number, head: num
 type SyncVectorHandler = (docPath: string, sv: Uint8Array, userId: string) => void;
 type SyncDiffHandler = (docPath: string, diff: Uint8Array, userId: string) => void;
 type StatusHandler = (connected: boolean) => void;
+type GenericHandler = (docPath: string, data: any, userId: string) => void;
 
 export class CollabTransport {
   private ws: WebSocket | null = null;
@@ -18,6 +19,8 @@ export class CollabTransport {
   private syncVectorHandlers: SyncVectorHandler[] = [];
   private syncDiffHandlers: SyncDiffHandler[] = [];
   private statusHandlers: StatusHandler[] = [];
+  private reviewHandlers: GenericHandler[] = [];
+  private permissionHandlers: GenericHandler[] = [];
   private _connected = false;
   private disposed = false;
 
@@ -75,6 +78,12 @@ export class CollabTransport {
                 h(msg.docPath, base64ToUint8Array(msg.diff), msg.userId);
               }
               break;
+            case "review":
+              for (const h of this.reviewHandlers) h(msg.docPath, msg, msg.userId);
+              break;
+            case "permission":
+              for (const h of this.permissionHandlers) h(msg.docPath, msg, msg.userId);
+              break;
           }
         } catch {
           // Ignore malformed messages
@@ -102,6 +111,8 @@ export class CollabTransport {
     this.syncVectorHandlers = [];
     this.syncDiffHandlers = [];
     this.statusHandlers = [];
+    this.reviewHandlers = [];
+    this.permissionHandlers = [];
   }
 
   subscribe(docPath: string): void {
@@ -128,11 +139,21 @@ export class CollabTransport {
     this.send({ action: "sync-diff", docPath, diff: uint8ArrayToBase64(diff), userId: this.userId });
   }
 
+  sendReview(docPath: string, data: Record<string, unknown>): void {
+    this.send({ action: "review", docPath, userId: this.userId, ...data });
+  }
+
+  sendPermission(docPath: string, mode: string): void {
+    this.send({ action: "permission", docPath, userId: this.userId, mode });
+  }
+
   onUpdate(handler: UpdateHandler): void { this.updateHandlers.push(handler); }
   onCursor(handler: CursorHandler): void { this.cursorHandlers.push(handler); }
   onSyncVector(handler: SyncVectorHandler): void { this.syncVectorHandlers.push(handler); }
   onSyncDiff(handler: SyncDiffHandler): void { this.syncDiffHandlers.push(handler); }
   onStatus(handler: StatusHandler): void { this.statusHandlers.push(handler); }
+  onReview(handler: GenericHandler): void { this.reviewHandlers.push(handler); }
+  onPermission(handler: GenericHandler): void { this.permissionHandlers.push(handler); }
 
   private send(msg: Record<string, unknown>): void {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {

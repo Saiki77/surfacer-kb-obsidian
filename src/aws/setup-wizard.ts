@@ -293,7 +293,7 @@ Resources:
                 await apigw.send(new PostToConnectionCommand({ ConnectionId: connectionId, Data: JSON.stringify({ action: "pong", ts: msg.ts }) }));
                 return { statusCode: 200, body: "Pong" };
               }
-              if (msg.docPath && ["update", "cursor", "sync-vector", "sync-diff"].includes(msg.action)) {
+              if (msg.docPath && ["update", "cursor", "sync-vector", "sync-diff", "review", "permission"].includes(msg.action)) {
                 const result = await ddb.send(new QueryCommand({ TableName: TABLE, IndexName: "docPath-index", KeyConditionExpression: "docPath = :dp", ExpressionAttributeValues: { ":dp": { S: msg.docPath } } }));
                 const peers = (result.Items || []).filter(item => item.connectionId.S !== connectionId);
                 const payload = JSON.stringify(msg);

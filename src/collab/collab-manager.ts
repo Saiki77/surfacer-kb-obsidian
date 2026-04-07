@@ -12,6 +12,7 @@ import type { Extension } from "@codemirror/state";
 import { CollabTransport } from "./collab-transport";
 import { CollabSession, type CursorInfo } from "./collab-session";
 import type { KBSyncSettings } from "../settings";
+import * as permissionStore from "../permissions/permission-store";
 
 export class CollabManager {
   private app: App;
@@ -28,6 +29,8 @@ export class CollabManager {
 
   // Track which EditorViews are bound to which sessions
   private boundEditors: Map<string, EditorView> = new Map();
+  // Permission cache (refreshed periodically)
+  private permCache: Map<string, permissionStore.DocPermission> = new Map();
 
   constructor(app: App, settings: KBSyncSettings) {
     this.app = app;
@@ -188,6 +191,11 @@ export class CollabManager {
           // Find the session for this editor
           for (const [docPath, view] of manager.boundEditors) {
             if (view === update.view) {
+              // Check permissions: block changes for view-only users
+              const perm = manager.permCache.get(docPath);
+              if (perm && !permissionStore.canEdit(perm, manager.settings.userName)) {
+                return; // View-only: don't propagate changes
+              }
               const session = manager.sessions.get(docPath);
               if (session) {
                 session.handleLocalChanges(update.changes);
@@ -342,6 +350,10 @@ export class CollabManager {
       const sv = Y.encodeStateVector(session.getYDoc());
       this.transport.sendSyncVector(docPath, sv);
     }
+    // Refresh permission cache
+    permissionStore.loadAllPermissions(this.settings).then((map) => {
+      this.permCache = map;
+    }).catch(() => {});
   }
 
   private broadcastLocalCursors(): void {

@@ -317,11 +317,11 @@ export class CollabManager {
       this.scanAndBindEditors();
     }, 2000);
 
-    // Reconciliation: exchange state vectors every 5 seconds
-    // This ensures peers converge even if individual updates were lost
+    // Reconciliation: exchange state vectors every 15 seconds
+    // Safety net ensuring peers converge even if messages were lost
     this.reconcileInterval = window.setInterval(() => {
       this.reconcile();
-    }, 5000);
+    }, 15000);
   }
 
   private stopPolling(): void {

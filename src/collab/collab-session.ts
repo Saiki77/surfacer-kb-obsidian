@@ -30,6 +30,8 @@ export class CollabSession {
   isSyncing = false;
   private destroyed = false;
   private snapshotInterval: number | null = null;
+  private resyncTimer: number | null = null;
+  private syncSafetyTimer: number | null = null;
   private historyTimer: number | null = null;
   private historySessionTimer: number | null = null;
   private currentHistoryId: string | null = null;
@@ -114,75 +116,83 @@ export class CollabSession {
 
   /**
    * Bind this session to a CM6 EditorView.
-   * Sets up: initial content sync + Y.Text observer (remote → CM6).
-   * Local changes (CM6 → Y.Text) are handled by the global ViewPlugin
-   * in CollabManager, NOT injected per-editor.
    */
   bindEditor(view: EditorView): void {
     if (this.view === view) return;
     this.unbindEditor();
     this.view = view;
 
-    // Sync initial content (Yjs → Editor if different)
+    // Sync initial content
     this.forceResyncEditor();
 
-    // Observe Y.Text changes (from remote updates) → push to CM6 editor
+    // Observe Y.Text changes — debounced to avoid flooding the editor
     this.ytextObserver = () => {
-      // Instead of converting deltas (which can drift), always verify
-      // the CM6 content matches Yjs and force-resync if needed.
       if (this.isSyncing || !this.view) return;
-      this.forceResyncEditor();
+      this.scheduleResync();
     };
     this.ytext.observe(this.ytextObserver);
-
-    console.log(`KB Collab: Bound editor for ${this.docPath}`);
   }
 
   /**
    * Called by the global ViewPlugin when this editor has local changes.
-   * Applies CM6 ChangeSet to Y.Text.
    */
   handleLocalChanges(changes: ChangeSet): void {
     if (this.isSyncing || this.destroyed) return;
-    this.isSyncing = true;
+    this.enterSync();
     try {
       this.ydoc.transact(() => {
         applyChangeSetToYText(this.ytext, changes);
       });
     } catch (err) {
-      console.error("KB Collab: Error applying local changes to Yjs:", err);
-      // Conversion failed — force resync to recover
-      this.forceResyncEditor();
+      console.error("KB Collab: Local→Yjs error:", err);
     } finally {
-      this.isSyncing = false;
+      this.exitSync();
     }
-    // Verify CM6 and Yjs are still in sync after local change
-    this.verifySync();
   }
 
   /**
-   * Force the CM6 editor to match the Yjs document content.
-   * Maps the cursor through the change so it stays with the text
-   * the user was editing, not at a fixed character offset.
+   * Schedule a debounced resync (50ms). Multiple rapid remote changes
+   * batch into a single editor update.
+   */
+  private scheduleResync(): void {
+    if (this.resyncTimer !== null) return;
+    this.resyncTimer = window.setTimeout(() => {
+      this.resyncTimer = null;
+      this.forceResyncEditor();
+    }, 50);
+  }
+
+  /**
+   * Sync the CM6 editor to match Yjs content.
+   * Computes a minimal diff (common prefix/suffix) and applies
+   * only the changed region, preserving cursor position.
    */
   private forceResyncEditor(): void {
-    if (!this.view) return;
-    const yjsContent = this.ytext.toString();
-    const editorContent = this.view.state.doc.toString();
+    if (!this.view || this.destroyed) return;
+
+    let yjsContent: string;
+    let editorContent: string;
+    try {
+      yjsContent = this.ytext.toString();
+      editorContent = this.view.state.doc.toString();
+    } catch {
+      return; // View or doc destroyed
+    }
+
     if (yjsContent === editorContent) return;
 
-    this.isSyncing = true;
+    this.enterSync();
     try {
       const oldCursor = this.view.state.selection.main.head;
 
-      // Find where old and new content diverge (common prefix/suffix)
-      // This lets us compute where the cursor should land after the edit.
+      // Find common prefix
       let prefixLen = 0;
       const minLen = Math.min(editorContent.length, yjsContent.length);
       while (prefixLen < minLen && editorContent[prefixLen] === yjsContent[prefixLen]) {
         prefixLen++;
       }
 
+      // Find common suffix
       let suffixLen = 0;
       while (
         suffixLen < (minLen - prefixLen) &&
@@ -191,21 +201,17 @@ export class CollabSession {
         suffixLen++;
       }
 
-      // The changed region in the old doc: [prefixLen, editorContent.length - suffixLen)
-      // The changed region in the new doc: [prefixLen, yjsContent.length - suffixLen)
       const changeFrom = prefixLen;
       const changeTo = editorContent.length - suffixLen;
       const insertText = yjsContent.slice(prefixLen, yjsContent.length - suffixLen);
 
-      // Map cursor: if cursor was before the change, keep it.
-      // If inside/after the change, shift by the length delta.
+      // Map cursor through the change
       let newCursor: number;
       if (oldCursor <= changeFrom) {
         newCursor = oldCursor;
       } else if (oldCursor >= changeTo) {
         newCursor = oldCursor + (yjsContent.length - editorContent.length);
       } else {
-        // Cursor was inside the changed region — place at end of new text
         newCursor = changeFrom + insertText.length;
       }
       newCursor = Math.max(0, Math.min(newCursor, yjsContent.length));
@@ -215,22 +221,32 @@ export class CollabSession {
         selection: { anchor: newCursor },
       });
     } catch (err) {
-      console.error("KB Collab: Force resync failed:", err);
+      console.error("KB Collab: Resync error:", err);
     } finally {
-      this.isSyncing = false;
+      this.exitSync();
     }
   }
 
   /**
-   * Verify CM6 and Yjs are in sync. If not, schedule a resync.
+   * Set isSyncing with a safety timer that auto-resets after 500ms
+   * to prevent permanent lockout if something goes wrong.
    */
-  private verifySync(): void {
-    if (!this.view || this.isSyncing) return;
-    const yjsContent = this.ytext.toString();
-    const editorContent = this.view.state.doc.toString();
-    if (yjsContent !== editorContent) {
-      // Drift detected — resync on next microtask to avoid re-entrancy
-      queueMicrotask(() => this.forceResyncEditor());
+  private enterSync(): void {
+    this.isSyncing = true;
+    if (this.syncSafetyTimer !== null) window.clearTimeout(this.syncSafetyTimer);
+    this.syncSafetyTimer = window.setTimeout(() => {
+      if (this.isSyncing) {
+        console.warn("KB Collab: isSyncing stuck, force-resetting");
+        this.isSyncing = false;
+      }
+    }, 500);
+  }
+
+  private exitSync(): void {
+    this.isSyncing = false;
+    if (this.syncSafetyTimer !== null) {
+      window.clearTimeout(this.syncSafetyTimer);
+      this.syncSafetyTimer = null;
     }
   }
 
@@ -238,6 +254,15 @@ export class CollabSession {
    * Unbind from the current editor (e.g., when user navigates away).
    */
   unbindEditor(): void {
+    if (this.resyncTimer !== null) {
+      window.clearTimeout(this.resyncTimer);
+      this.resyncTimer = null;
+    }
+    if (this.syncSafetyTimer !== null) {
+      window.clearTimeout(this.syncSafetyTimer);
+      this.syncSafetyTimer = null;
+    }
+    this.isSyncing = false;
     if (this.ytextObserver) {
       this.ytext.unobserve(this.ytextObserver);
       this.ytextObserver = null;

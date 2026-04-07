@@ -13,6 +13,8 @@ import type { DocReads } from "../reads/read-store";
 import * as mentionStore from "../mentions/mention-store";
 import type { MentionNotification } from "../mentions/mention-store";
 import * as reviewStore from "../reviews/review-store";
+import { aggregateDashboard } from "../dashboard/dashboard-aggregator";
+import * as commentStore from "../comments/comment-store";
 import type { ReviewRequest } from "../reviews/review-store";
 import * as permissionStore from "../permissions/permission-store";
 import type { DocPermission } from "../permissions/permission-store";
@@ -64,7 +66,7 @@ export interface Handoff {
   completionNotes: string | null;
 }
 
-type TabName = "files" | "team" | "handoffs" | "chat" | "history";
+type TabName = "files" | "team" | "handoffs" | "chat" | "history" | "dashboard";
 
 export class KBSyncSidebarView extends ItemView {
   private plugin: KBSyncPlugin;
@@ -140,6 +142,10 @@ export class KBSyncSidebarView extends ItemView {
 
   getPresenceData(): PresenceEntry[] {
     return this.teamPresence;
+  }
+
+  getRemoteFiles(): S3ListItem[] {
+    return this.remoteFiles;
   }
 
   /**
@@ -398,6 +404,7 @@ export class KBSyncSidebarView extends ItemView {
       { id: "chat", label: "Chat" },
       { id: "handoffs", label: "Handoffs" },
       { id: "history", label: "History" },
+      { id: "dashboard", label: "Dashboard" },
     ];
 
     for (const tab of tabs) {
@@ -443,6 +450,7 @@ export class KBSyncSidebarView extends ItemView {
           if (this.teamPresence.length === 0) this.refreshPresence();
         }
         if (tab.id === "history") this.refreshHistory();
+        if (tab.id === "dashboard") { this.refreshPresence(); this.refreshReviews(); this.refreshMyMentions(); }
       });
     }
 
@@ -463,6 +471,7 @@ export class KBSyncSidebarView extends ItemView {
         case "handoffs": this.renderHandoffs(body); break;
         case "chat": this.renderChat(body); break;
         case "history": this.renderHistory(body); break;
+        case "dashboard": this.renderDashboard(body); break;
       }
     } catch (err) {
       body.createDiv({ cls: "kb-sync-empty", text: "Error rendering tab." });
@@ -1497,6 +1506,167 @@ export class KBSyncSidebarView extends ItemView {
       case "queue-drain": return "Queue drained";
       case "ai-process": return "AI processed";
     }
+  }
+
+  // ── Dashboard Tab ──────────────────────────────────
+
+  private renderDashboard(container: HTMLElement): void {
+    const data = aggregateDashboard(
+      this.teamPresence,
+      this.allReviews,
+      this.myMentions
+    );
+
+    // Right Now: who's editing what
+    const nowSection = container.createDiv({ cls: "kb-sync-dash-section" });
+    nowSection.createDiv({ cls: "kb-sync-dash-section-title", text: "Right Now" });
+    if (data.activeEditors.length === 0) {
+      nowSection.createDiv({ cls: "kb-sync-dash-empty", text: "Nobody editing right now" });
+    } else {
+      for (const ed of data.activeEditors) {
+        const row = nowSection.createDiv({ cls: "kb-sync-dash-row" });
+        const colorIdx = this.hashUserColor(ed.user);
+        row.createSpan({ cls: `kb-sync-presence-dot kb-sync-dot-color-${colorIdx}` });
+        row.createSpan({ text: ed.user, cls: "kb-sync-dash-user" });
+        const docEl = row.createSpan({ text: ed.docPath.split("/").pop() || ed.docPath, cls: "kb-sync-dash-doc" });
+        docEl.addEventListener("click", () => {
+          this.app.workspace.openLinkText(`${this.plugin.settings.syncFolderPath}/${ed.docPath}`, "", false);
+        });
+      }
+    }
+
+    // Pending Reviews
+    if (data.pendingReviews.length > 0) {
+      const revSection = container.createDiv({ cls: "kb-sync-dash-section" });
+      revSection.createDiv({ cls: "kb-sync-dash-section-title", text: `Pending Reviews (${data.pendingReviews.length})` });
+      for (const rev of data.pendingReviews) {
+        const row = revSection.createDiv({ cls: "kb-sync-dash-row" });
+        row.createSpan({ text: "\u25CF", cls: "kb-sync-review-pending" });
+        const docEl = row.createSpan({ text: rev.docPath.split("/").pop() || rev.docPath, cls: "kb-sync-dash-doc" });
+        docEl.addEventListener("click", () => {
+          this.app.workspace.openLinkText(`${this.plugin.settings.syncFolderPath}/${rev.docPath}`, "", false);
+        });
+        row.createSpan({ text: ` by ${rev.requestedBy}`, cls: "kb-sync-dash-meta" });
+      }
+    }
+
+    // Unread Mentions
+    if (data.unreadMentions.length > 0) {
+      const menSection = container.createDiv({ cls: "kb-sync-dash-section" });
+      menSection.createDiv({ cls: "kb-sync-dash-section-title", text: `Unread Mentions (${data.unreadMentions.length})` });
+      for (const m of data.unreadMentions.slice(0, 5)) {
+        const row = menSection.createDiv({ cls: "kb-sync-dash-row" });
+        row.createSpan({ text: `@`, cls: "kb-sync-dash-at" });
+        row.createSpan({ text: `${m.mentionedBy} in `, cls: "kb-sync-dash-meta" });
+        const docEl = row.createSpan({ text: m.docPath.split("/").pop() || m.docPath, cls: "kb-sync-dash-doc" });
+        docEl.addEventListener("click", () => {
+          this.app.workspace.openLinkText(`${this.plugin.settings.syncFolderPath}/${m.docPath}`, "", false);
+        });
+      }
+    }
+
+    // File change notifications
+    const notifications = (this.plugin as any).fileNotifications ?? [];
+    if (notifications.length > 0) {
+      const notifSection = container.createDiv({ cls: "kb-sync-dash-section" });
+      notifSection.createDiv({ cls: "kb-sync-dash-section-title", text: `Changed Files (${notifications.length})` });
+      for (const n of notifications) {
+        const row = notifSection.createDiv({ cls: "kb-sync-dash-row" });
+        row.createSpan({ text: n.reason === "starred" ? "\u2605" : "\u25CF", cls: "kb-sync-dash-icon" });
+        const docEl = row.createSpan({ text: n.docPath.split("/").pop() || n.docPath, cls: "kb-sync-dash-doc" });
+        docEl.addEventListener("click", () => {
+          this.app.workspace.openLinkText(`${this.plugin.settings.syncFolderPath}/${n.docPath}`, "", false);
+        });
+      }
+    }
+  }
+
+  // ── Comment Thread Panel ──────────────────────────
+
+  showCommentThread(threadId: string, threads: commentStore.CommentThread[]): void {
+    const thread = threads.find((t) => t.id === threadId);
+    if (!thread) return;
+
+    // Show comment panel in sidebar body
+    const body = this.contentEl.querySelector(".kb-sync-sidebar-body");
+    if (!body) return;
+
+    // Remove existing panel
+    const existing = body.querySelector(".kb-sync-comment-panel");
+    if (existing) existing.remove();
+
+    const panel = document.createElement("div");
+    panel.className = "kb-sync-comment-panel";
+
+    // Header
+    const header = document.createElement("div");
+    header.className = "kb-sync-comment-panel-header";
+    header.innerHTML = `<span>Comment by ${thread.createdBy}</span>`;
+    const closeBtn = document.createElement("span");
+    closeBtn.className = "kb-sync-comment-close";
+    closeBtn.textContent = "\u2715";
+    closeBtn.onclick = () => panel.remove();
+    header.appendChild(closeBtn);
+    panel.appendChild(header);
+
+    // Quoted text
+    const quote = document.createElement("div");
+    quote.className = "kb-sync-comment-quote";
+    quote.textContent = `"${thread.anchorText}"`;
+    panel.appendChild(quote);
+
+    // Replies
+    for (const reply of thread.replies) {
+      const replyEl = document.createElement("div");
+      replyEl.className = "kb-sync-comment-reply";
+      const colorIdx = this.hashUserColor(reply.user);
+      replyEl.innerHTML = `<span class="kb-sync-presence-dot kb-sync-dot-color-${colorIdx}"></span>` +
+        `<strong>${reply.user}</strong> <span class="kb-sync-comment-time">${this.formatTime(reply.timestamp)}</span>` +
+        `<div>${reply.text}</div>`;
+      panel.appendChild(replyEl);
+    }
+
+    // Reply input
+    const inputBar = document.createElement("div");
+    inputBar.className = "kb-sync-comment-input-bar";
+    const input = document.createElement("input");
+    input.type = "text";
+    input.placeholder = "Reply...";
+    input.className = "kb-sync-comment-input";
+    const sendBtn = document.createElement("button");
+    sendBtn.textContent = "Send";
+    sendBtn.className = "kb-sync-comment-send";
+    sendBtn.onclick = async () => {
+      if (!input.value.trim()) return;
+      thread.replies.push({
+        id: `${Date.now()}`,
+        user: this.plugin.settings.userName,
+        text: input.value.trim(),
+        timestamp: new Date().toISOString(),
+      });
+      await commentStore.saveComment(this.plugin.settings, thread);
+      input.value = "";
+      this.showCommentThread(threadId, threads); // Re-render
+    };
+    inputBar.appendChild(input);
+    inputBar.appendChild(sendBtn);
+    panel.appendChild(inputBar);
+
+    // Resolve button
+    if (thread.status === "open") {
+      const resolveBtn = document.createElement("button");
+      resolveBtn.textContent = "Resolve";
+      resolveBtn.className = "kb-sync-comment-resolve";
+      resolveBtn.onclick = async () => {
+        thread.status = "resolved";
+        await commentStore.saveComment(this.plugin.settings, thread);
+        panel.remove();
+        (this.plugin as any).refreshCommentsForActiveFile?.();
+      };
+      panel.appendChild(resolveBtn);
+    }
+
+    body.insertBefore(panel, body.firstChild);
   }
 
   // ── Live Collaborator Bar ───────────────────────────

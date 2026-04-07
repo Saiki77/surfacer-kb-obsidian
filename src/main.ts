@@ -10,6 +10,12 @@ import * as readStore from "./reads/read-store";
 import * as mentionStore from "./mentions/mention-store";
 import * as reviewStore from "./reviews/review-store";
 import * as permissionStore from "./permissions/permission-store";
+import * as commentStore from "./comments/comment-store";
+import { commentDecorationExtension } from "./comments/comment-decorations";
+import { highlightDecorationExtension } from "./highlights/highlight-decorations";
+import { computeChangedRanges, type ChangeRange } from "./highlights/diff-computer";
+import * as historyManager from "./collab/history-manager";
+import * as notificationManager from "./notifications/notification-manager";
 
 const SYNC_ICON = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/></svg>`;
 
@@ -26,6 +32,11 @@ export default class KBSyncPlugin extends Plugin {
   private statusBar!: SyncStatusBar;
   private sidebarView: KBSyncSidebarView | null = null;
   collabManager!: CollabManager;
+  private activeComments: commentStore.CommentThread[] = [];
+  private changeHighlightRanges: ChangeRange[] = [];
+  highlightEnabled = false;
+  private fileSnapshot: Map<string, string> = new Map();
+  fileNotifications: notificationManager.FileChangeNotification[] = [];
   private pullIntervalId: number | null = null;
   private pushIntervalId: number | null = null;
   private presenceIntervalId: number | null = null;
@@ -55,11 +66,13 @@ export default class KBSyncPlugin extends Plugin {
           conflicts,
           this.syncEngine.queueLength
         );
-        // Refresh sidebar after sync completes
+        // Refresh sidebar after sync completes + detect file changes
         if (status === "idle" && this.sidebarView) {
           this.sidebarView.refreshRemoteFiles();
           this.sidebarView.refreshPresence();
           this.sidebarView.refreshHandoffs();
+          // File change notifications
+          this.detectFileChanges();
         }
       },
       // Activity callback
@@ -79,10 +92,15 @@ export default class KBSyncPlugin extends Plugin {
 
     // Global CM6 extensions for collaboration (registered ONCE, never duplicated)
     this.registerEditorExtension([
-      // Cursor decorations: renders remote user cursors
       remoteCursorExtension(() => this.collabManager.getAllRemoteCursors()),
-      // Local change tracker: routes editor changes to the correct CollabSession
       this.collabManager.getLocalChangeExtension(),
+      commentDecorationExtension(
+        () => this.activeComments,
+        (threadId) => this.openCommentThread(threadId)
+      ),
+      highlightDecorationExtension(() =>
+        this.highlightEnabled ? this.changeHighlightRanges : []
+      ),
     ]);
 
     // Scan editors on tab switch + record read receipts
@@ -177,6 +195,86 @@ export default class KBSyncPlugin extends Plugin {
         }
       },
     });
+
+    this.addCommand({
+      id: "add-comment",
+      name: "Add comment on selection",
+      editorCallback: async (editor) => {
+        const sel = editor.getSelection();
+        if (!sel) { new Notice("Select text first."); return; }
+        const file = this.app.workspace.getActiveFile();
+        const syncFolder = normalizePath(this.settings.syncFolderPath);
+        if (!file || !file.path.startsWith(syncFolder + "/")) return;
+        const docPath = file.path.slice(syncFolder.length + 1);
+        const from = editor.posToOffset(editor.getCursor("from"));
+        const to = editor.posToOffset(editor.getCursor("to"));
+        const text = prompt("Comment:");
+        if (!text) return;
+        const thread: commentStore.CommentThread = {
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          docPath, anchorStart: from, anchorEnd: to, anchorText: sel,
+          status: "open", createdAt: new Date().toISOString(),
+          createdBy: this.settings.userName,
+          replies: [{ id: "1", user: this.settings.userName, text, timestamp: new Date().toISOString() }],
+        };
+        await commentStore.saveComment(this.settings, thread);
+        await this.refreshCommentsForActiveFile();
+        new Notice("Comment added.");
+      },
+    });
+
+    this.addCommand({
+      id: "toggle-highlights",
+      name: "Toggle recent change highlights",
+      callback: async () => {
+        this.highlightEnabled = !this.highlightEnabled;
+        if (this.highlightEnabled) {
+          await this.refreshHighlightsForActiveFile();
+          new Notice("Recent changes highlighted.");
+        } else {
+          this.changeHighlightRanges = [];
+          new Notice("Highlights off.");
+        }
+      },
+    });
+
+    // Editor context menu: Add Comment
+    this.registerEvent(
+      this.app.workspace.on("editor-menu", (menu, editor) => {
+        const sel = editor.getSelection();
+        if (sel) {
+          menu.addItem((item) => {
+            item.setTitle("Add Comment").setIcon("message-square").onClick(async () => {
+              const file = this.app.workspace.getActiveFile();
+              const syncFolder = normalizePath(this.settings.syncFolderPath);
+              if (!file || !file.path.startsWith(syncFolder + "/")) return;
+              const docPath = file.path.slice(syncFolder.length + 1);
+              const from = editor.posToOffset(editor.getCursor("from"));
+              const to = editor.posToOffset(editor.getCursor("to"));
+              const text = prompt("Comment:");
+              if (!text) return;
+              const thread: commentStore.CommentThread = {
+                id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                docPath, anchorStart: from, anchorEnd: to, anchorText: sel,
+                status: "open", createdAt: new Date().toISOString(),
+                createdBy: this.settings.userName,
+                replies: [{ id: "1", user: this.settings.userName, text, timestamp: new Date().toISOString() }],
+              };
+              await commentStore.saveComment(this.settings, thread);
+              await this.refreshCommentsForActiveFile();
+              new Notice("Comment added.");
+            });
+          });
+        }
+      })
+    );
+
+    // Refresh comments when switching files
+    this.registerEvent(
+      this.app.workspace.on("file-open", () => {
+        this.refreshCommentsForActiveFile();
+      })
+    );
 
     // Listen for folder renames and deletes within the sync folder
     this.registerEvent(
@@ -381,6 +479,70 @@ export default class KBSyncPlugin extends Plugin {
       ...syncData,
       activityLog: this.sidebarView?.getActivityLog() || [],
     });
+  }
+
+  async refreshCommentsForActiveFile(): Promise<void> {
+    const file = this.app.workspace.getActiveFile();
+    const syncFolder = normalizePath(this.settings.syncFolderPath);
+    if (!file || !file.path.startsWith(syncFolder + "/")) {
+      this.activeComments = [];
+      return;
+    }
+    const docPath = file.path.slice(syncFolder.length + 1);
+    try {
+      const content = await this.app.vault.read(file);
+      let threads = await commentStore.loadComments(this.settings, docPath);
+      // Reanchor comments based on current content
+      threads = threads.map((t) => commentStore.reanchorComment(t, content));
+      this.activeComments = threads;
+    } catch {
+      this.activeComments = [];
+    }
+  }
+
+  openCommentThread(threadId: string): void {
+    if (this.sidebarView) {
+      (this.sidebarView as any).showCommentThread?.(threadId, this.activeComments);
+    }
+  }
+
+  async refreshHighlightsForActiveFile(): Promise<void> {
+    if (!this.highlightEnabled) return;
+    const file = this.app.workspace.getActiveFile();
+    const syncFolder = normalizePath(this.settings.syncFolderPath);
+    if (!file || !file.path.startsWith(syncFolder + "/")) {
+      this.changeHighlightRanges = [];
+      return;
+    }
+    const docPath = file.path.slice(syncFolder.length + 1);
+    try {
+      const currentContent = await this.app.vault.read(file);
+      const snapshots = await historyManager.listSnapshots(this.settings, docPath);
+      // Find the most recent snapshot older than 1 hour
+      const cutoff = Date.now() - 60 * 60 * 1000;
+      const older = snapshots.find((s) => new Date(s.timestamp).getTime() < cutoff);
+      if (!older) { this.changeHighlightRanges = []; return; }
+      const snapshot = await historyManager.loadSnapshot(this.settings, docPath, older.id);
+      if (!snapshot) { this.changeHighlightRanges = []; return; }
+      this.changeHighlightRanges = computeChangedRanges(snapshot.content, currentContent);
+    } catch {
+      this.changeHighlightRanges = [];
+    }
+  }
+
+  private detectFileChanges(): void {
+    try {
+      const currentFiles = this.sidebarView?.getRemoteFiles() ?? [];
+      const starredPaths = new Set(
+        (this.sidebarView as any)?.userStars?.map((s: any) => s.docPath) ?? []
+      );
+      if (this.fileSnapshot.size > 0) {
+        this.fileNotifications = notificationManager.detectChanges(
+          currentFiles, this.fileSnapshot, starredPaths, this.settings.userName
+        );
+      }
+      this.fileSnapshot = notificationManager.buildFileSnapshot(currentFiles);
+    } catch { /* best effort */ }
   }
 
   private lastReadDocPath = "";

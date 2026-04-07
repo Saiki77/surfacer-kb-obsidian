@@ -947,6 +947,197 @@
   opacity: 0.7;
 }
 
+/* ── File Toolbar + Templates ───────────────────────── */
+
+.kb-sync-file-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+}
+
+.kb-sync-template-btn {
+  font-size: 11px;
+  padding: 2px 8px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.kb-sync-template-btn:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.kb-sync-template-picker {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.kb-sync-template-item {
+  display: flex;
+  flex-direction: column;
+  padding: 6px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.kb-sync-template-item:hover {
+  background: var(--background-modifier-hover);
+}
+
+.kb-sync-template-name {
+  font-weight: 500;
+  color: var(--text-normal);
+}
+
+.kb-sync-template-desc {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* ── Starred Docs ───────────────────────────────────── */
+
+.kb-sync-starred-section {
+  border-bottom: 1px solid var(--background-modifier-border);
+  padding: 8px 0;
+}
+
+.kb-sync-starred-header {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 2px 12px 6px;
+}
+
+.kb-sync-starred-file {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.kb-sync-starred-file:hover {
+  background: var(--background-modifier-hover);
+}
+
+.kb-sync-star-btn {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-faint);
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.15s;
+  margin-left: auto;
+}
+
+.kb-sync-tree-file:hover .kb-sync-star-btn,
+.kb-sync-starred-file:hover .kb-sync-star-btn {
+  opacity: 0.6;
+}
+
+.kb-sync-star-btn:hover {
+  opacity: 1 !important;
+}
+
+.kb-sync-star-active {
+  color: #f59e0b !important;
+  opacity: 1 !important;
+}
+
+/* ── Pinned Messages ────────────────────────────────── */
+
+.kb-sync-chat-pinned-section {
+  border-bottom: 1px solid var(--background-modifier-border);
+  padding: 8px 12px;
+  background: var(--background-secondary);
+}
+
+.kb-sync-chat-pinned-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.kb-sync-chat-pin-icon {
+  font-size: 12px;
+}
+
+.kb-sync-chat-pinned-msg {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+  font-size: 12px;
+}
+
+.kb-sync-chat-pinned-user {
+  font-weight: 600;
+  color: var(--text-normal);
+  flex-shrink: 0;
+}
+
+.kb-sync-chat-pinned-text {
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.kb-sync-chat-unpin-btn {
+  cursor: pointer;
+  color: var(--text-faint);
+  font-size: 10px;
+  flex-shrink: 0;
+  padding: 2px;
+  border-radius: 3px;
+}
+
+.kb-sync-chat-unpin-btn:hover {
+  color: var(--text-error);
+  background: var(--background-modifier-hover);
+}
+
+.kb-sync-chat-msg-footer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.kb-sync-chat-pin-btn {
+  cursor: pointer;
+  font-size: 10px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.kb-sync-chat-msg:hover .kb-sync-chat-pin-btn {
+  opacity: 0.5;
+}
+
+.kb-sync-chat-pin-btn:hover {
+  opacity: 1 !important;
+}
+
+.kb-sync-chat-pin-active {
+  opacity: 0.7 !important;
+}
+
 /* ── History Tab ────────────────────────────────────── */
 
 .kb-sync-history-empty {

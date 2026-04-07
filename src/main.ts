@@ -1,10 +1,11 @@
-import { Plugin, addIcon, TFolder, normalizePath } from "obsidian";
+import { Plugin, Notice, addIcon, TFile, TFolder, normalizePath } from "obsidian";
 import { KBSyncSettingTab, DEFAULT_SETTINGS, type KBSyncSettings } from "./settings";
 import { SyncEngine, type SyncStatus } from "./sync/sync-engine";
 import { SyncStatusBar } from "./ui/sync-status-bar";
 import { KBSyncSidebarView, VIEW_TYPE_KB_SYNC, type ActivityEntry } from "./ui/sidebar-view";
 import { CollabManager } from "./collab/collab-manager";
 import { remoteCursorExtension } from "./collab/cursor-decorations";
+import * as templateStore from "./templates/template-store";
 
 const SYNC_ICON = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/></svg>`;
 
@@ -122,6 +123,28 @@ export default class KBSyncPlugin extends Plugin {
       id: "open-sidebar",
       name: "Open Knowledge Base sidebar",
       callback: () => this.activateSidebar(),
+    });
+
+    this.addCommand({
+      id: "save-as-template",
+      name: "Save current file as template",
+      callback: async () => {
+        const file = this.app.workspace.getActiveFile();
+        if (!file || !(file instanceof TFile)) {
+          new Notice("No active file to save as template.");
+          return;
+        }
+        const content = await this.app.vault.read(file);
+        const name = file.basename;
+        await templateStore.saveTemplate(
+          this.settings,
+          name,
+          content,
+          "",
+          this.settings.userName
+        );
+        new Notice(`Saved "${name}" as a template.`);
+      },
     });
 
     // Listen for folder renames and deletes within the sync folder

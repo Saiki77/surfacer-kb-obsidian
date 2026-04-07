@@ -4,6 +4,10 @@ import * as s3 from "../aws/s3-client";
 import type { S3ListItem } from "../aws/s3-client";
 import * as historyManager from "../collab/history-manager";
 import type { HistoryEntry } from "../collab/history-manager";
+import * as starStore from "../stars/star-store";
+import type { StarEntry } from "../stars/star-store";
+import * as templateStore from "../templates/template-store";
+import type { TemplateMeta } from "../templates/template-store";
 
 export const VIEW_TYPE_KB_SYNC = "kb-sync-sidebar";
 
@@ -28,6 +32,9 @@ export interface ChatMessage {
   user: string;
   text: string;
   timestamp: string;
+  pinned?: boolean;
+  pinnedBy?: string;
+  pinnedAt?: string;
 }
 
 export interface Handoff {
@@ -65,6 +72,8 @@ export class KBSyncSidebarView extends ItemView {
   private chatInputCursor = 0;
   private historyEntries: Omit<HistoryEntry, "content">[] = [];
   private historyDocPath: string | null = null;
+  private userStars: StarEntry[] = [];
+  private templates: TemplateMeta[] = [];
 
   constructor(leaf: WorkspaceLeaf, plugin: KBSyncPlugin) {
     super(leaf);
@@ -270,6 +279,29 @@ export class KBSyncSidebarView extends ItemView {
     } catch { /* silently fail */ }
   }
 
+  async togglePinMessage(msg: ChatMessage): Promise<void> {
+    const isPinned = !msg.pinned;
+    const updated: ChatMessage = {
+      ...msg,
+      pinned: isPinned || undefined,
+      pinnedBy: isPinned ? this.plugin.settings.userName : undefined,
+      pinnedAt: isPinned ? new Date().toISOString() : undefined,
+    };
+    try {
+      await s3.putObject(
+        this.plugin.settings,
+        `_chat/${msg.id}.json`,
+        JSON.stringify(updated, null, 2),
+        {},
+        "application/json"
+      );
+      // Update local state
+      const idx = this.chatMessages.findIndex((m) => m.id === msg.id);
+      if (idx >= 0) this.chatMessages[idx] = updated;
+      if (this.activeTab === "chat") this.render();
+    } catch { /* silently fail */ }
+  }
+
   async sendChatMessage(text: string): Promise<void> {
     const userName = this.plugin.settings.userName;
     if (!userName || !text.trim()) return;
@@ -384,7 +416,7 @@ export class KBSyncSidebarView extends ItemView {
       tabEl.addEventListener("click", () => {
         this.activeTab = tab.id;
         this.render();
-        if (tab.id === "files") this.refreshRemoteFiles();
+        if (tab.id === "files") { this.refreshRemoteFiles(); this.refreshStars(); }
         if (tab.id === "team") this.refreshPresence();
         if (tab.id === "handoffs") this.refreshHandoffs();
         if (tab.id === "chat") {
@@ -425,8 +457,13 @@ export class KBSyncSidebarView extends ItemView {
   // ── Files Tab ──────────────────────────────────────────
 
   private renderFiles(container: HTMLElement): void {
-    const countEl = container.createDiv({ cls: "kb-sync-file-count" });
-    countEl.setText(`${this.remoteFiles.length} file(s)`);
+    const fileToolbar = container.createDiv({ cls: "kb-sync-file-toolbar" });
+    fileToolbar.createSpan({ cls: "kb-sync-file-count", text: `${this.remoteFiles.length} file(s)` });
+    const templateBtn = fileToolbar.createEl("button", {
+      cls: "kb-sync-template-btn",
+      text: "+ Template",
+    });
+    templateBtn.addEventListener("click", () => this.showTemplatePicker(container));
 
     if (this.remoteFiles.length === 0) {
       container.createDiv({
@@ -436,9 +473,97 @@ export class KBSyncSidebarView extends ItemView {
       return;
     }
 
+    // Starred section
+    const starredPaths = new Set(this.userStars.map((s) => s.docPath));
+    const starredFiles = this.remoteFiles.filter((f) => starredPaths.has(f.key));
+    if (starredFiles.length > 0) {
+      const starredSection = container.createDiv({ cls: "kb-sync-starred-section" });
+      starredSection.createDiv({ cls: "kb-sync-starred-header", text: "Starred" });
+      for (const file of starredFiles) {
+        const fileEl = starredSection.createDiv({ cls: "kb-sync-starred-file" });
+        const iconEl = fileEl.createSpan({ cls: "kb-sync-tree-icon" });
+        setIcon(iconEl, "file-text");
+        fileEl.createSpan({ text: file.key.split("/").pop() || file.key });
+        const unstarBtn = fileEl.createSpan({ cls: "kb-sync-star-btn kb-sync-star-active", text: "\u2605" });
+        unstarBtn.addEventListener("click", async (e) => {
+          e.stopPropagation();
+          await this.toggleFileStar(file.key);
+        });
+        fileEl.addEventListener("click", () => {
+          this.app.workspace.openLinkText(
+            `${this.plugin.settings.syncFolderPath}/${file.key}`, "", false
+          );
+        });
+      }
+    }
+
     const tree = this.buildFileTree(this.remoteFiles);
     const list = container.createDiv({ cls: "kb-sync-file-list" });
-    this.renderTree(list, tree, 0);
+    this.renderTree(list, tree, 0, starredPaths);
+  }
+
+  private async showTemplatePicker(container: HTMLElement): Promise<void> {
+    // Remove existing picker if open
+    const existing = container.querySelector(".kb-sync-template-picker");
+    if (existing) { existing.remove(); return; }
+
+    const picker = container.createDiv({ cls: "kb-sync-template-picker" });
+
+    if (this.templates.length === 0) {
+      await this.refreshTemplates();
+    }
+
+    if (this.templates.length === 0) {
+      picker.createDiv({ cls: "kb-sync-empty", text: "No templates yet. Save a document as a template from the command palette." });
+      return;
+    }
+
+    for (const tmpl of this.templates) {
+      const tmplEl = picker.createDiv({ cls: "kb-sync-template-item" });
+      tmplEl.createSpan({ text: tmpl.name, cls: "kb-sync-template-name" });
+      if (tmpl.description) {
+        tmplEl.createSpan({ text: tmpl.description, cls: "kb-sync-template-desc" });
+      }
+      tmplEl.addEventListener("click", async () => {
+        try {
+          const content = await templateStore.loadTemplate(this.plugin.settings, tmpl.name);
+          const fileName = `${tmpl.name}-${Date.now()}.md`;
+          const fullPath = `${this.plugin.settings.syncFolderPath}/${fileName}`;
+          await this.app.vault.create(fullPath, content);
+          this.app.workspace.openLinkText(fullPath, "", false);
+          picker.remove();
+          const { Notice } = await import("obsidian");
+          new Notice(`Created ${fileName} from template`);
+        } catch (err) {
+          const { Notice } = await import("obsidian");
+          new Notice(`Error: ${(err as Error).message}`);
+        }
+      });
+    }
+  }
+
+  async refreshTemplates(): Promise<void> {
+    try {
+      this.templates = await templateStore.listTemplates(this.plugin.settings);
+    } catch { /* silently fail */ }
+  }
+
+  private async toggleFileStar(docPath: string): Promise<void> {
+    const user = this.plugin.settings.userName;
+    if (!user) return;
+    try {
+      const result = await starStore.toggleStar(this.plugin.settings, user, docPath);
+      this.userStars = result.stars;
+      if (this.activeTab === "files") this.render();
+    } catch { /* silently fail */ }
+  }
+
+  async refreshStars(): Promise<void> {
+    const user = this.plugin.settings.userName;
+    if (!user) return;
+    try {
+      this.userStars = await starStore.loadStars(this.plugin.settings, user);
+    } catch { /* silently fail */ }
   }
 
   private buildFileTree(
@@ -464,7 +589,8 @@ export class KBSyncSidebarView extends ItemView {
   private renderTree(
     container: HTMLElement,
     tree: Map<string, any>,
-    depth: number
+    depth: number,
+    starredPaths?: Set<string>
   ): void {
     const sortedKeys = Array.from(tree.keys()).sort((a, b) => {
       const aIsFolder = tree.get(a) instanceof Map;
@@ -483,7 +609,7 @@ export class KBSyncSidebarView extends ItemView {
         setIcon(iconEl, "folder");
         folderEl.createSpan({ text: key, cls: "kb-sync-tree-label" });
         const children = container.createDiv({ cls: "kb-sync-tree-children" });
-        this.renderTree(children, value, depth + 1);
+        this.renderTree(children, value, depth + 1, starredPaths);
         let collapsed = false;
         folderEl.addEventListener("click", () => {
           collapsed = !collapsed;
@@ -497,6 +623,15 @@ export class KBSyncSidebarView extends ItemView {
         const iconEl = fileEl.createSpan({ cls: "kb-sync-tree-icon" });
         setIcon(iconEl, "file-text");
         fileEl.createSpan({ text: key, cls: "kb-sync-tree-label" });
+        const isStarred = starredPaths?.has(file.key) ?? false;
+        const starBtn = fileEl.createSpan({
+          cls: `kb-sync-star-btn ${isStarred ? "kb-sync-star-active" : ""}`,
+          text: isStarred ? "\u2605" : "\u2606",
+        });
+        starBtn.addEventListener("click", async (e) => {
+          e.stopPropagation();
+          await this.toggleFileStar(file.key);
+        });
         const sizeEl = fileEl.createSpan({ cls: "kb-sync-tree-meta" });
         sizeEl.setText(`${(file.size / 1024).toFixed(1)} KB`);
         fileEl.addEventListener("click", () => {
@@ -725,6 +860,23 @@ export class KBSyncSidebarView extends ItemView {
       });
     } else {
       const currentUser = this.plugin.settings.userName;
+
+      // Pinned messages section
+      const pinned = this.chatMessages.filter((m) => m.pinned);
+      if (pinned.length > 0) {
+        const pinnedSection = messagesEl.createDiv({ cls: "kb-sync-chat-pinned-section" });
+        const pinnedHeader = pinnedSection.createDiv({ cls: "kb-sync-chat-pinned-header" });
+        pinnedHeader.createSpan({ cls: "kb-sync-chat-pin-icon", text: "\uD83D\uDCCC" });
+        pinnedHeader.createSpan({ text: `Pinned (${pinned.length})` });
+        for (const msg of pinned) {
+          const pinnedEl = pinnedSection.createDiv({ cls: "kb-sync-chat-pinned-msg" });
+          pinnedEl.createSpan({ text: msg.user, cls: "kb-sync-chat-pinned-user" });
+          pinnedEl.createSpan({ text: msg.text, cls: "kb-sync-chat-pinned-text" });
+          const unpinBtn = pinnedEl.createSpan({ cls: "kb-sync-chat-unpin-btn", text: "\u2715" });
+          unpinBtn.addEventListener("click", () => this.togglePinMessage(msg));
+        }
+      }
+
       let lastDate = "";
 
       for (const msg of this.chatMessages) {
@@ -765,8 +917,14 @@ export class KBSyncSidebarView extends ItemView {
         });
         this.renderMessageContent(bubbleEl, msg.text);
 
-        const timeEl = msgEl.createDiv({ cls: "kb-sync-chat-msg-time" });
-        timeEl.setText(this.formatTimeShort(msg.timestamp));
+        const footerEl = msgEl.createDiv({ cls: "kb-sync-chat-msg-footer" });
+        footerEl.createSpan({ cls: "kb-sync-chat-msg-time", text: this.formatTimeShort(msg.timestamp) });
+        const pinBtn = footerEl.createSpan({
+          cls: `kb-sync-chat-pin-btn ${msg.pinned ? "kb-sync-chat-pin-active" : ""}`,
+          text: "\uD83D\uDCCC",
+        });
+        pinBtn.setAttribute("aria-label", msg.pinned ? "Unpin" : "Pin");
+        pinBtn.addEventListener("click", () => this.togglePinMessage(msg));
       }
     }
 

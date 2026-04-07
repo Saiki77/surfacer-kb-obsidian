@@ -273,6 +273,7 @@ export default class KBSyncPlugin extends Plugin {
     this.registerEvent(
       this.app.workspace.on("file-open", () => {
         this.refreshCommentsForActiveFile();
+        this.refreshHighlightsForActiveFile();
       })
     );
 
@@ -518,11 +519,11 @@ export default class KBSyncPlugin extends Plugin {
     try {
       const currentContent = await this.app.vault.read(file);
       const snapshots = await historyManager.listSnapshots(this.settings, docPath);
-      // Find the most recent snapshot older than 1 hour
-      const cutoff = Date.now() - 60 * 60 * 1000;
-      const older = snapshots.find((s) => new Date(s.timestamp).getTime() < cutoff);
-      if (!older) { this.changeHighlightRanges = []; return; }
-      const snapshot = await historyManager.loadSnapshot(this.settings, docPath, older.id);
+      // Use the oldest available snapshot to compare against
+      // (snapshots are sorted newest-first, so last = oldest)
+      if (snapshots.length < 2) { this.changeHighlightRanges = []; return; }
+      const oldest = snapshots[snapshots.length - 1];
+      const snapshot = await historyManager.loadSnapshot(this.settings, docPath, oldest.id);
       if (!snapshot) { this.changeHighlightRanges = []; return; }
       this.changeHighlightRanges = computeChangedRanges(snapshot.content, currentContent);
     } catch {

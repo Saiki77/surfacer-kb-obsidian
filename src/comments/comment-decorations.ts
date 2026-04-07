@@ -15,17 +15,11 @@ export function commentDecorationExtension(
   return ViewPlugin.fromClass(
     class {
       decorations: DecorationSet;
-      private interval: number;
+      private view: EditorView;
 
       constructor(view: EditorView) {
+        this.view = view;
         this.decorations = this.build(view);
-        this.interval = window.setInterval(() => {
-          const newDeco = this.build(view);
-          if (newDeco !== this.decorations) {
-            this.decorations = newDeco;
-            view.requestMeasure();
-          }
-        }, 1000);
 
         // Click handler for comment underlines
         view.contentDOM.addEventListener("click", (e) => {
@@ -35,7 +29,10 @@ export function commentDecorationExtension(
         });
       }
 
-      update() {}
+      update() {
+        // Rebuild every update cycle so new comments appear instantly
+        this.decorations = this.build(this.view);
+      }
 
       build(view: EditorView): DecorationSet {
         const comments = getComments();
@@ -66,9 +63,7 @@ export function commentDecorationExtension(
         }
       }
 
-      destroy() {
-        window.clearInterval(this.interval);
-      }
+      destroy() {}
     },
     { decorations: (v) => v.decorations }
   );

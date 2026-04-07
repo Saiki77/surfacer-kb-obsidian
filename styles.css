@@ -947,6 +947,66 @@
   opacity: 0.7;
 }
 
+/* ── Read Receipts ──────────────────────────────────── */
+
+.kb-sync-read-badge {
+  font-size: 10px;
+  color: var(--text-faint);
+  margin-left: 4px;
+  flex-shrink: 0;
+}
+
+/* ── Mentions ───────────────────────────────────────── */
+
+.kb-sync-mention-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+
+.kb-sync-mention-user {
+  font-weight: 600;
+  color: var(--text-normal);
+}
+
+.kb-sync-mention-text {
+  color: var(--text-muted);
+}
+
+.kb-sync-mention-doc {
+  color: var(--interactive-accent);
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.kb-sync-mention-doc:hover {
+  text-decoration: underline;
+}
+
+.kb-sync-mention-time {
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.kb-sync-mention-mark-read {
+  margin: 8px 12px;
+  font-size: 11px;
+  padding: 4px 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.kb-sync-mention-mark-read:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
 /* ── File Toolbar + Templates ───────────────────────── */
 
 .kb-sync-file-toolbar {

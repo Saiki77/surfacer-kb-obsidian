@@ -8,6 +8,10 @@ import * as starStore from "../stars/star-store";
 import type { StarEntry } from "../stars/star-store";
 import * as templateStore from "../templates/template-store";
 import type { TemplateMeta } from "../templates/template-store";
+import * as readStore from "../reads/read-store";
+import type { DocReads } from "../reads/read-store";
+import * as mentionStore from "../mentions/mention-store";
+import type { MentionNotification } from "../mentions/mention-store";
 
 export const VIEW_TYPE_KB_SYNC = "kb-sync-sidebar";
 
@@ -74,6 +78,8 @@ export class KBSyncSidebarView extends ItemView {
   private historyDocPath: string | null = null;
   private userStars: StarEntry[] = [];
   private templates: TemplateMeta[] = [];
+  private allReads: Map<string, DocReads> = new Map();
+  private myMentions: MentionNotification[] = [];
 
   constructor(leaf: WorkspaceLeaf, plugin: KBSyncPlugin) {
     super(leaf);
@@ -402,7 +408,7 @@ export class KBSyncSidebarView extends ItemView {
         }
       }
 
-      // Badge for active team members
+      // Badge for active team members + unread mentions
       if (tab.id === "team") {
         const now = Date.now();
         const activeCount = this.teamPresence.filter(
@@ -411,13 +417,17 @@ export class KBSyncSidebarView extends ItemView {
         if (activeCount > 0) {
           tabEl.createSpan({ cls: "kb-sync-tab-badge kb-sync-badge-green", text: String(activeCount) });
         }
+        const unreadMentions = this.myMentions.filter((m) => !m.read).length;
+        if (unreadMentions > 0) {
+          tabEl.createSpan({ cls: "kb-sync-tab-badge", text: `@${unreadMentions}` });
+        }
       }
 
       tabEl.addEventListener("click", () => {
         this.activeTab = tab.id;
         this.render();
-        if (tab.id === "files") { this.refreshRemoteFiles(); this.refreshStars(); }
-        if (tab.id === "team") this.refreshPresence();
+        if (tab.id === "files") { this.refreshRemoteFiles(); this.refreshStars(); this.refreshAllReads(); }
+        if (tab.id === "team") { this.refreshPresence(); this.refreshMyMentions(); }
         if (tab.id === "handoffs") this.refreshHandoffs();
         if (tab.id === "chat") {
           this.refreshChat();
@@ -566,6 +576,20 @@ export class KBSyncSidebarView extends ItemView {
     } catch { /* silently fail */ }
   }
 
+  async refreshAllReads(): Promise<void> {
+    try {
+      this.allReads = await readStore.loadAllReads(this.plugin.settings);
+    } catch { /* silently fail */ }
+  }
+
+  async refreshMyMentions(): Promise<void> {
+    const user = this.plugin.settings.userName;
+    if (!user) return;
+    try {
+      this.myMentions = await mentionStore.loadMentions(this.plugin.settings, user);
+    } catch { /* silently fail */ }
+  }
+
   private buildFileTree(
     files: S3ListItem[]
   ): Map<string, S3ListItem[] | Map<string, any>> {
@@ -632,6 +656,13 @@ export class KBSyncSidebarView extends ItemView {
           e.stopPropagation();
           await this.toggleFileStar(file.key);
         });
+        // Read receipt count
+        const reads = this.allReads.get(file.key);
+        if (reads && reads.readers.length > 0) {
+          const readEl = fileEl.createSpan({ cls: "kb-sync-read-badge" });
+          readEl.setText(`\uD83D\uDC41 ${reads.readers.length}`);
+          readEl.setAttribute("aria-label", reads.readers.map((r) => r.user).join(", "));
+        }
         const sizeEl = fileEl.createSpan({ cls: "kb-sync-tree-meta" });
         sizeEl.setText(`${(file.size / 1024).toFixed(1)} KB`);
         fileEl.addEventListener("click", () => {
@@ -754,6 +785,32 @@ export class KBSyncSidebarView extends ItemView {
       for (const entry of offline) {
         this.renderPresenceCard(list, entry, "offline");
       }
+    }
+
+    // Mentions section
+    const unreadMentions = this.myMentions.filter((m) => !m.read);
+    if (unreadMentions.length > 0) {
+      list.createDiv({ cls: "kb-sync-team-divider", text: `Mentions (${unreadMentions.length})` });
+      for (const mention of unreadMentions.slice(0, 10)) {
+        const mentionEl = list.createDiv({ cls: "kb-sync-mention-item" });
+        const colorIdx = this.hashUserColor(mention.mentionedBy);
+        mentionEl.createSpan({ cls: `kb-sync-presence-dot kb-sync-dot-color-${colorIdx}` });
+        mentionEl.createSpan({ text: mention.mentionedBy, cls: "kb-sync-mention-user" });
+        mentionEl.createSpan({ text: " mentioned you in ", cls: "kb-sync-mention-text" });
+        const docLink = mentionEl.createSpan({ text: mention.docPath.split("/").pop() || mention.docPath, cls: "kb-sync-mention-doc" });
+        docLink.addEventListener("click", () => {
+          this.app.workspace.openLinkText(
+            `${this.plugin.settings.syncFolderPath}/${mention.docPath}`, "", false
+          );
+        });
+        mentionEl.createSpan({ text: ` ${this.formatTime(mention.timestamp)}`, cls: "kb-sync-mention-time" });
+      }
+      const markReadBtn = list.createEl("button", { text: "Mark all read", cls: "kb-sync-mention-mark-read" });
+      markReadBtn.addEventListener("click", async () => {
+        await mentionStore.markAllRead(this.plugin.settings, this.plugin.settings.userName);
+        this.myMentions = this.myMentions.map((m) => ({ ...m, read: true }));
+        this.render();
+      });
     }
   }
 

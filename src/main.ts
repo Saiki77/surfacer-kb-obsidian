@@ -6,6 +6,8 @@ import { KBSyncSidebarView, VIEW_TYPE_KB_SYNC, type ActivityEntry } from "./ui/s
 import { CollabManager } from "./collab/collab-manager";
 import { remoteCursorExtension } from "./collab/cursor-decorations";
 import * as templateStore from "./templates/template-store";
+import * as readStore from "./reads/read-store";
+import * as mentionStore from "./mentions/mention-store";
 
 const SYNC_ICON = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/></svg>`;
 
@@ -81,10 +83,12 @@ export default class KBSyncPlugin extends Plugin {
       this.collabManager.getLocalChangeExtension(),
     ]);
 
-    // Scan editors on tab switch so collab sessions bind immediately
+    // Scan editors on tab switch + record read receipts
     this.registerEvent(
       this.app.workspace.on("active-leaf-change", () => {
         this.collabManager.scanAndBindEditors();
+        // Record read receipt for the active file
+        this.recordReadForActiveFile();
       })
     );
 
@@ -272,11 +276,12 @@ export default class KBSyncPlugin extends Plugin {
       }, presenceMs);
       this.registerInterval(this.presenceIntervalId);
 
-      // Chat refresh (every 30 seconds)
+      // Chat refresh + mention scan (every 30 seconds)
       this.chatIntervalId = window.setInterval(() => {
         if (this.sidebarView) {
           this.sidebarView.refreshChat();
         }
+        this.scanMentionsForActiveFile();
       }, 30 * 1000);
       this.registerInterval(this.chatIntervalId);
     }
@@ -349,5 +354,46 @@ export default class KBSyncPlugin extends Plugin {
       ...syncData,
       activityLog: this.sidebarView?.getActivityLog() || [],
     });
+  }
+
+  private lastReadDocPath = "";
+  private recordReadForActiveFile(): void {
+    const user = this.settings.userName;
+    if (!user) return;
+    const file = this.app.workspace.getActiveFile();
+    const syncFolder = normalizePath(this.settings.syncFolderPath);
+    if (!file || !file.path.startsWith(syncFolder + "/")) return;
+    const docPath = file.path.slice(syncFolder.length + 1);
+    // Debounce: don't re-record the same file
+    if (docPath === this.lastReadDocPath) return;
+    this.lastReadDocPath = docPath;
+    readStore.recordRead(this.settings, docPath, user).catch(() => {});
+  }
+
+  /**
+   * Scan the active file for @mentions and notify mentioned users.
+   */
+  async scanMentionsForActiveFile(): Promise<void> {
+    const user = this.settings.userName;
+    if (!user) return;
+    const file = this.app.workspace.getActiveFile();
+    const syncFolder = normalizePath(this.settings.syncFolderPath);
+    if (!file || !(file instanceof TFile) || !file.path.startsWith(syncFolder + "/")) return;
+    const docPath = file.path.slice(syncFolder.length + 1);
+
+    try {
+      const content = await this.app.vault.read(file);
+      const teamUsers = this.sidebarView?.getPresenceData()?.map((p) => p.user) ?? [];
+      const mentioned = mentionStore.extractMentions(content, teamUsers);
+      // Get a context snippet (first 80 chars around the mention)
+      for (const mentionedUser of mentioned) {
+        if (mentionedUser === user) continue; // Don't notify yourself
+        const idx = content.toLowerCase().indexOf(`@${mentionedUser.toLowerCase()}`);
+        const start = Math.max(0, idx - 20);
+        const end = Math.min(content.length, idx + mentionedUser.length + 60);
+        const context = content.slice(start, end).replace(/\n/g, " ");
+        await mentionStore.addMention(this.settings, mentionedUser, user, docPath, context);
+      }
+    } catch { /* best effort */ }
   }
 }

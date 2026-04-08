@@ -34,7 +34,8 @@ export class CollabSession {
   private view: EditorView | null = null;
   private ytextObserver: ((event: Y.YTextEvent) => void) | null = null;
   private ydocUpdateHandler: ((update: Uint8Array, origin: any) => void) | null = null;
-  isSyncing = false;
+  isSyncing = false;        // True when applying remote → CM6 (blocks local→Yjs)
+  private pushingToYjs = false;  // True when applying local → Yjs (blocks remote→CM6)
   private destroyed = false;
   private snapshotInterval: number | null = null;
   private resyncTimer: number | null = null;
@@ -91,7 +92,7 @@ export class CollabSession {
     this.transport.sendUpdate(this.docPath, fullState);
 
     this.ydocUpdateHandler = (update: Uint8Array, origin: any) => {
-      if (origin === "remote") return;
+      if (origin === "remote" || this.isSyncing) return;
       this.snapshotDirty = true;
       // Batch outgoing updates: accumulate for 100ms then merge via Y.mergeUpdates
       this.pendingOutUpdates.push(update);
@@ -126,29 +127,13 @@ export class CollabSession {
 
     this.forceResyncEditor();
 
-    // Y.Text observer: use delta-based sync (fast) with fallback
+    // Y.Text observer: apply remote changes to CM6
     this.ytextObserver = (event: Y.YTextEvent) => {
-      if (this.isSyncing || !this.view) return;
-
-      // If editor is not focused, queue the change for later
-      if (!this.view.hasFocus) {
-        this.pendingRemoteChanges = true;
-        return;
-      }
-
+      // Block if WE are pushing local changes to Yjs (prevent echo)
+      if (this.pushingToYjs || this.isSyncing || !this.view) return;
       this.applyDeltaToEditor(event);
     };
     this.ytext.observe(this.ytextObserver);
-  }
-
-  /**
-   * Called when the editor regains focus. Applies any queued changes.
-   */
-  onEditorFocus(): void {
-    if (this.pendingRemoteChanges && this.view) {
-      this.pendingRemoteChanges = false;
-      this.forceResyncEditor();
-    }
   }
 
   /**
@@ -217,9 +202,11 @@ export class CollabSession {
   }
 
   handleLocalChanges(changes: ChangeSet): void {
-    if (this.isSyncing || this.destroyed) return;
-    this._isActive = true; // User is typing → activate
-    this.enterSync();
+    // Only block if we're currently pushing remote→CM6 (prevent echo)
+    // Do NOT block on isSyncing from the remote side
+    if (this.pushingToYjs || this.destroyed) return;
+    this._isActive = true;
+    this.pushingToYjs = true;
     try {
       this.ydoc.transact(() => {
         applyChangeSetToYText(this.ytext, changes);
@@ -227,7 +214,7 @@ export class CollabSession {
     } catch (err) {
       console.error("KB Collab: Local→Yjs error:", err);
     } finally {
-      this.exitSync();
+      this.pushingToYjs = false;
     }
   }
 
@@ -329,7 +316,7 @@ export class CollabSession {
       this.syncSafetyTimer = null;
     }
     this.isSyncing = false;
-    this.pendingRemoteChanges = false;
+    this.pushingToYjs = false;
     if (this.ytextObserver) {
       this.ytext.unobserve(this.ytextObserver);
       this.ytextObserver = null;

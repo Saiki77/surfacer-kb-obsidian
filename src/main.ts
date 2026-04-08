@@ -217,8 +217,9 @@ export default class KBSyncPlugin extends Plugin {
           createdBy: this.settings.userName,
           replies: [{ id: "1", user: this.settings.userName, text, timestamp: new Date().toISOString() }],
         };
+        // Add to local state immediately so decoration shows instantly
+        this.activeComments.push(thread);
         await commentStore.saveComment(this.settings, thread);
-        await this.refreshCommentsForActiveFile();
         new Notice("Comment added.");
       },
     });
@@ -260,8 +261,8 @@ export default class KBSyncPlugin extends Plugin {
                 createdBy: this.settings.userName,
                 replies: [{ id: "1", user: this.settings.userName, text, timestamp: new Date().toISOString() }],
               };
+              this.activeComments.push(thread);
               await commentStore.saveComment(this.settings, thread);
-              await this.refreshCommentsForActiveFile();
               new Notice("Comment added.");
             });
           });
@@ -411,6 +412,14 @@ export default class KBSyncPlugin extends Plugin {
         this.refreshCommentsForActiveFile();
       }, 30 * 1000);
       this.registerInterval(this.chatIntervalId);
+    }
+
+    // Comment refresh for collab (every 10s — picks up partner's comments)
+    if (this.settings.collaborationEnabled && this.settings.wsUrl) {
+      const commentRefreshId = window.setInterval(() => {
+        this.refreshCommentsForActiveFile();
+      }, 10 * 1000);
+      this.registerInterval(commentRefreshId);
     }
 
     // Collab UI refresh (every 2s — updates collab bar + status bar online count)

@@ -307,10 +307,10 @@ export class CollabManager {
   private startPolling(): void {
     this.stopPolling();
 
-    // Broadcast local cursor positions every 500ms
+    // Broadcast local cursor positions every 200ms (responsive feel)
     this.cursorInterval = window.setInterval(() => {
       this.broadcastLocalCursors();
-    }, 500);
+    }, 200);
 
     // Scan editors every 2 seconds to catch tab switches, new files, etc.
     this.scanInterval = window.setInterval(() => {

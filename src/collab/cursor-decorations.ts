@@ -81,20 +81,16 @@ export function remoteCursorExtension(getCursors: CursorProvider) {
   return ViewPlugin.fromClass(
     class {
       decorations: DecorationSet;
-      private interval: number;
+      private view: EditorView;
 
       constructor(view: EditorView) {
+        this.view = view;
         this.decorations = this.buildDecorations(view);
-        // Refresh cursors every 500ms
-        this.interval = window.setInterval(() => {
-          this.decorations = this.buildDecorations(view);
-          view.requestMeasure();
-        }, 500);
       }
 
       update() {
-        // Rebuilds are triggered by the interval, not by document updates.
-        // This avoids performance issues from rebuilding on every keystroke.
+        // Rebuild on every update cycle for instant cursor movement
+        this.decorations = this.buildDecorations(this.view);
       }
 
       buildDecorations(view: EditorView): DecorationSet {
@@ -180,9 +176,7 @@ export function remoteCursorExtension(getCursors: CursorProvider) {
         }
       }
 
-      destroy() {
-        window.clearInterval(this.interval);
-      }
+      destroy() {}
     },
     {
       decorations: (v) => v.decorations,

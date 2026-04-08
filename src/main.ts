@@ -402,12 +402,13 @@ export default class KBSyncPlugin extends Plugin {
       }, presenceMs);
       this.registerInterval(this.presenceIntervalId);
 
-      // Chat refresh + mention scan (every 30 seconds)
+      // Chat refresh + mention scan + comment refresh (every 30 seconds)
       this.chatIntervalId = window.setInterval(() => {
         if (this.sidebarView) {
           this.sidebarView.refreshChat();
         }
         this.scanMentionsForActiveFile();
+        this.refreshCommentsForActiveFile();
       }, 30 * 1000);
       this.registerInterval(this.chatIntervalId);
     }

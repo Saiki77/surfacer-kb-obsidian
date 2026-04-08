@@ -1,13 +1,12 @@
 /**
  * CollabSession: manages a single Yjs document for one collaboratively-edited file.
  *
- * Performance optimizations:
- * 1. Delta-based sync (fast path) with full-replacement fallback (safety net)
- * 2. CM6 native ChangeSet for cursor mapping
- * 3. Debounced resync (50ms batching)
- * 4. Safety timer to auto-reset stuck isSyncing
- * 5. Smart snapshots (only when dirty)
- * 6. Focus-aware: queues changes for unfocused editors
+ * Sync architecture:
+ * - Local edits: CM6 ViewPlugin → handleLocalChanges → Y.Text (origin="local")
+ * - Remote edits: WebSocket → Y.applyUpdate (origin="remote") → Y.Text observer → CM6
+ * - Echo prevention: Y.Doc update handler skips origin="remote" and origin="local"
+ *   Y.Text observer skips when isSyncing=true (set during remote→CM6 dispatch)
+ *   ViewPlugin skips when isSyncing=true (set during remote→CM6 dispatch)
  */
 
 import * as Y from "yjs";
@@ -34,19 +33,16 @@ export class CollabSession {
   private view: EditorView | null = null;
   private ytextObserver: ((event: Y.YTextEvent) => void) | null = null;
   private ydocUpdateHandler: ((update: Uint8Array, origin: any) => void) | null = null;
-  isSyncing = false;        // True when applying remote → CM6 (blocks local→Yjs)
-  private pushingToYjs = false;  // True when applying local → Yjs (blocks remote→CM6)
+  isSyncing = false; // True ONLY during remote→CM6 dispatch
   private destroyed = false;
   private snapshotInterval: number | null = null;
   private resyncTimer: number | null = null;
-  private syncSafetyTimer: number | null = null;
   private historyTimer: number | null = null;
   private historySessionTimer: number | null = null;
   private currentHistoryId: string | null = null;
   private sessionId: string;
   private remoteCursors: Map<string, CursorInfo> = new Map();
   private snapshotDirty = false;
-  private pendingRemoteChanges = false;
   private _isActive = false;
   private pendingOutUpdates: Uint8Array[] = [];
   private outBatchTimer: number | null = null;
@@ -64,9 +60,7 @@ export class CollabSession {
     this.sessionId = `${Date.now()}-${settings.userName}`;
   }
 
-  get isActive(): boolean {
-    return this._isActive;
-  }
+  get isActive(): boolean { return this._isActive; }
 
   async initialize(currentContent: string): Promise<void> {
     let snapshot: Uint8Array | null = null;
@@ -91,10 +85,10 @@ export class CollabSession {
     const fullState = Y.encodeStateAsUpdate(this.ydoc);
     this.transport.sendUpdate(this.docPath, fullState);
 
+    // Only broadcast updates that come from LOCAL edits (not remote, not syncing)
     this.ydocUpdateHandler = (update: Uint8Array, origin: any) => {
-      if (origin === "remote" || this.isSyncing) return;
+      if (origin === "remote" || origin === "local-to-yjs") return;
       this.snapshotDirty = true;
-      // Batch outgoing updates: accumulate for 100ms then merge via Y.mergeUpdates
       this.pendingOutUpdates.push(update);
       if (this.outBatchTimer === null) {
         this.outBatchTimer = window.setTimeout(() => {
@@ -111,7 +105,6 @@ export class CollabSession {
     };
     this.ydoc.on("update", this.ydocUpdateHandler);
 
-    // Smart snapshots: only save when dirty, check every 5 min
     this.snapshotInterval = window.setInterval(() => {
       if (this.snapshotDirty) {
         this.snapshotDirty = false;
@@ -127,96 +120,34 @@ export class CollabSession {
 
     this.forceResyncEditor();
 
-    // Y.Text observer: apply remote changes to CM6
-    this.ytextObserver = (event: Y.YTextEvent) => {
-      // Block if WE are pushing local changes to Yjs (prevent echo)
-      if (this.pushingToYjs || this.isSyncing || !this.view) return;
-      this.applyDeltaToEditor(event);
+    // Y.Text observer: fires when Yjs content changes (from any source)
+    // We only want to update CM6 for REMOTE changes
+    this.ytextObserver = (event: Y.YTextEvent, txn: Y.Transaction) => {
+      // Skip if this change came from local editing or from our own CM6→Yjs sync
+      if (txn.origin === "local-to-yjs" || this.isSyncing || !this.view) return;
+      this.scheduleResync();
     };
     this.ytext.observe(this.ytextObserver);
   }
 
   /**
-   * Mark session as active (user started typing). Used for lazy activation.
+   * Called by the global ViewPlugin when this editor has local changes.
+   * Uses origin="local-to-yjs" so the Y.Doc update handler and Y.Text
+   * observer both ignore it (preventing echo loops).
    */
-  activate(): void {
-    this._isActive = true;
-  }
-
-  /**
-   * Fast path: apply Y.Text deltas directly to CM6 editor.
-   * Falls back to full resync if positions don't match.
-   */
-  private applyDeltaToEditor(event: Y.YTextEvent): void {
-    if (!this.view) return;
-
-    this.enterSync();
-    try {
-      const changes = yTextEventToChangeSpec(event);
-      if (changes.length === 0) { this.exitSync(); return; }
-
-      const editorLen = this.view.state.doc.length;
-
-      // Validate all positions are within bounds
-      let valid = true;
-      for (const c of changes) {
-        if (c.from < 0 || c.from > editorLen || (c.to != null && c.to > editorLen)) {
-          valid = false;
-          break;
-        }
-      }
-
-      if (valid) {
-        // Use CM6's native ChangeSet for proper cursor mapping
-        const changeSet = ChangeSet.of(changes, editorLen);
-        const oldCursor = this.view.state.selection.main.head;
-        const newCursor = changeSet.mapPos(oldCursor, 1); // 1 = assoc right
-
-        this.view.dispatch({
-          changes: changeSet,
-          selection: { anchor: newCursor },
-        });
-      } else {
-        // Positions invalid — fall back to full resync
-        this.exitSync();
-        this.forceResyncEditor();
-        return;
-      }
-
-      // Verify sync after delta apply
-      const yjsContent = this.ytext.toString();
-      const editorContent = this.view.state.doc.toString();
-      if (yjsContent !== editorContent) {
-        // Delta didn't produce correct result — schedule full resync
-        this.exitSync();
-        this.scheduleResync();
-        return;
-      }
-    } catch {
-      // Delta failed — fall back to full resync
-      this.exitSync();
-      this.scheduleResync();
-      return;
-    }
-    this.exitSync();
-  }
-
   handleLocalChanges(changes: ChangeSet): void {
-    // Only block if we're currently pushing remote→CM6 (prevent echo)
-    // Do NOT block on isSyncing from the remote side
-    if (this.pushingToYjs || this.destroyed) return;
+    if (this.isSyncing || this.destroyed) return;
     this._isActive = true;
-    this.pushingToYjs = true;
     try {
       this.ydoc.transact(() => {
         applyChangeSetToYText(this.ytext, changes);
-      });
+      }, "local-to-yjs"); // Origin tag prevents echo
     } catch (err) {
       console.error("KB Collab: Local→Yjs error:", err);
-    } finally {
-      this.pushingToYjs = false;
     }
   }
+
+  activate(): void { this._isActive = true; }
 
   private scheduleResync(): void {
     if (this.resyncTimer !== null) return;
@@ -227,8 +158,9 @@ export class CollabSession {
   }
 
   /**
-   * Full content resync (safety net). Computes minimal diff via
-   * common prefix/suffix and uses CM6 ChangeSet.mapPos for cursor.
+   * Sync CM6 editor to match Yjs content.
+   * Sets isSyncing=true during dispatch so the ViewPlugin ignores
+   * the resulting editor update (preventing echo).
    */
   private forceResyncEditor(): void {
     if (!this.view || this.destroyed) return;
@@ -238,22 +170,18 @@ export class CollabSession {
     try {
       yjsContent = this.ytext.toString();
       editorContent = this.view.state.doc.toString();
-    } catch {
-      return;
-    }
+    } catch { return; }
 
     if (yjsContent === editorContent) return;
 
-    this.enterSync();
+    this.isSyncing = true;
     try {
-      // Find common prefix
       let prefixLen = 0;
       const minLen = Math.min(editorContent.length, yjsContent.length);
       while (prefixLen < minLen && editorContent[prefixLen] === yjsContent[prefixLen]) {
         prefixLen++;
       }
 
-      // Find common suffix
       let suffixLen = 0;
       while (
         suffixLen < (minLen - prefixLen) &&
@@ -266,7 +194,6 @@ export class CollabSession {
       const changeTo = editorContent.length - suffixLen;
       const insertText = yjsContent.slice(prefixLen, yjsContent.length - suffixLen);
 
-      // Use CM6 ChangeSet.mapPos for precise cursor mapping
       const changeSet = ChangeSet.of(
         [{ from: changeFrom, to: changeTo, insert: insertText }],
         editorContent.length
@@ -284,25 +211,7 @@ export class CollabSession {
     } catch (err) {
       console.error("KB Collab: Resync error:", err);
     } finally {
-      this.exitSync();
-    }
-  }
-
-  private enterSync(): void {
-    this.isSyncing = true;
-    if (this.syncSafetyTimer !== null) window.clearTimeout(this.syncSafetyTimer);
-    this.syncSafetyTimer = window.setTimeout(() => {
-      if (this.isSyncing) {
-        this.isSyncing = false;
-      }
-    }, 500);
-  }
-
-  private exitSync(): void {
-    this.isSyncing = false;
-    if (this.syncSafetyTimer !== null) {
-      window.clearTimeout(this.syncSafetyTimer);
-      this.syncSafetyTimer = null;
+      this.isSyncing = false;
     }
   }
 
@@ -311,12 +220,7 @@ export class CollabSession {
       window.clearTimeout(this.resyncTimer);
       this.resyncTimer = null;
     }
-    if (this.syncSafetyTimer !== null) {
-      window.clearTimeout(this.syncSafetyTimer);
-      this.syncSafetyTimer = null;
-    }
     this.isSyncing = false;
-    this.pushingToYjs = false;
     if (this.ytextObserver) {
       this.ytext.unobserve(this.ytextObserver);
       this.ytextObserver = null;
@@ -398,7 +302,6 @@ export class CollabSession {
     if (this.historySessionTimer !== null) window.clearTimeout(this.historySessionTimer);
     if (this.outBatchTimer !== null) {
       window.clearTimeout(this.outBatchTimer);
-      // Flush remaining updates before destroy
       if (this.pendingOutUpdates.length > 0) {
         const merged = Y.mergeUpdates(this.pendingOutUpdates);
         this.transport.sendUpdate(this.docPath, merged);
@@ -415,23 +318,6 @@ export class CollabSession {
 }
 
 // ── Helpers ─────────────────────────────────────────
-
-function yTextEventToChangeSpec(event: Y.YTextEvent): any[] {
-  const changes: any[] = [];
-  let oldPos = 0;
-  for (const delta of event.delta) {
-    if (delta.retain != null) oldPos += delta.retain;
-    if (delta.insert != null) {
-      const text = typeof delta.insert === "string" ? delta.insert : "";
-      if (text.length > 0) changes.push({ from: oldPos, to: oldPos, insert: text });
-    }
-    if (delta.delete != null) {
-      changes.push({ from: oldPos, to: oldPos + delta.delete });
-      oldPos += delta.delete;
-    }
-  }
-  return changes;
-}
 
 function applyChangeSetToYText(ytext: Y.Text, changes: ChangeSet): void {
   let adj = 0;

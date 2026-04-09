@@ -117,7 +117,11 @@ export class SyncEngine {
     const folderPath = this.syncFolderPath();
     const folder = this.app.vault.getAbstractFileByPath(folderPath);
     if (!folder) {
-      await this.app.vault.createFolder(folderPath);
+      try {
+        await this.app.vault.createFolder(folderPath);
+      } catch {
+        // Folder may already exist (race condition)
+      }
     }
   }
 
@@ -169,14 +173,17 @@ export class SyncEngine {
   ): Promise<void> {
     const fullPath = this.vaultPath(relativePath);
 
-    // Ensure parent folders exist
+    // Ensure parent folders exist (create entire path)
     const parts = fullPath.split("/");
     parts.pop();
-    if (parts.length > 0) {
-      const parentPath = parts.join("/");
-      const parent = this.app.vault.getAbstractFileByPath(parentPath);
-      if (!parent) {
-        await this.app.vault.createFolder(parentPath);
+    for (let i = 1; i <= parts.length; i++) {
+      const folderPath = parts.slice(0, i).join("/");
+      if (!this.app.vault.getAbstractFileByPath(folderPath)) {
+        try {
+          await this.app.vault.createFolder(folderPath);
+        } catch {
+          // Folder may already exist (race condition)
+        }
       }
     }
 

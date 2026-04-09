@@ -23,6 +23,7 @@ export class CollabTransport {
   private permissionHandlers: GenericHandler[] = [];
   private _connected = false;
   private disposed = false;
+  private keepaliveInterval: number | null = null;
 
   constructor(wsUrl: string, userId: string) {
     this.wsUrl = wsUrl;
@@ -41,12 +42,21 @@ export class CollabTransport {
 
       this.ws.onopen = () => {
         this._connected = true;
+        // Keepalive ping every 5 min to prevent API Gateway idle disconnect (10 min timeout)
+        if (this.keepaliveInterval !== null) window.clearInterval(this.keepaliveInterval);
+        this.keepaliveInterval = window.setInterval(() => {
+          this.send({ action: "ping", ts: Date.now() });
+        }, 5 * 60 * 1000);
         this.notifyStatus(true);
       };
 
       this.ws.onclose = () => {
         this._connected = false;
         this.ws = null;
+        if (this.keepaliveInterval !== null) {
+          window.clearInterval(this.keepaliveInterval);
+          this.keepaliveInterval = null;
+        }
         this.notifyStatus(false);
       };
 
@@ -105,6 +115,10 @@ export class CollabTransport {
 
   dispose(): void {
     this.disposed = true;
+    if (this.keepaliveInterval !== null) {
+      window.clearInterval(this.keepaliveInterval);
+      this.keepaliveInterval = null;
+    }
     this.disconnect();
     this.updateHandlers = [];
     this.cursorHandlers = [];

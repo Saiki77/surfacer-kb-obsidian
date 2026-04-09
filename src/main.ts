@@ -86,6 +86,12 @@ export default class KBSyncPlugin extends Plugin {
 
     // Collaboration manager
     this.collabManager = new CollabManager(this.app, this.settings);
+
+    // Fix 2: Synchronous safety write on window close/reload
+    (this as any)._beforeUnloadHandler = () => {
+      this.collabManager.writeAllToVaultSync();
+    };
+    window.addEventListener("beforeunload", (this as any)._beforeUnloadHandler);
     this.syncEngine.setCollabChecker((path) =>
       this.collabManager.isInCollabMode(path)
     );
@@ -219,8 +225,16 @@ export default class KBSyncPlugin extends Plugin {
         };
         // Add to local state immediately so decoration shows instantly
         this.activeComments.push(thread);
-        await commentStore.saveComment(this.settings, thread);
-        new Notice("Comment added.");
+        try {
+          await commentStore.saveComment(this.settings, thread);
+          new Notice("Comment added.");
+        } catch {
+          new Notice("Failed to save comment. Retrying...");
+          setTimeout(async () => {
+            try { await commentStore.saveComment(this.settings, thread); }
+            catch { new Notice("Comment save failed. Will retry on next sync."); }
+          }, 5000);
+        }
       },
     });
 
@@ -262,8 +276,16 @@ export default class KBSyncPlugin extends Plugin {
                 replies: [{ id: "1", user: this.settings.userName, text, timestamp: new Date().toISOString() }],
               };
               this.activeComments.push(thread);
-              await commentStore.saveComment(this.settings, thread);
-              new Notice("Comment added.");
+              try {
+                await commentStore.saveComment(this.settings, thread);
+                new Notice("Comment added.");
+              } catch {
+                new Notice("Failed to save comment. Retrying...");
+                setTimeout(async () => {
+                  try { await commentStore.saveComment(this.settings, thread); }
+                  catch { new Notice("Comment save failed."); }
+                }, 5000);
+              }
             });
           });
         }
@@ -375,6 +397,12 @@ export default class KBSyncPlugin extends Plugin {
   }
 
   async onunload(): Promise<void> {
+    // Fix 6: Clear debounce timers
+    if ((this as any)._modifyTimer) clearTimeout((this as any)._modifyTimer);
+    // Remove beforeunload handler
+    if ((this as any)._beforeUnloadHandler) {
+      window.removeEventListener("beforeunload", (this as any)._beforeUnloadHandler);
+    }
     this.clearIntervals();
     await this.collabManager.destroy();
     await this.persistSyncData();

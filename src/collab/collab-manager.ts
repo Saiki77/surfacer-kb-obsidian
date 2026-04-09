@@ -230,6 +230,25 @@ export class CollabManager {
   }
 
   /**
+   * Fix 2: Synchronous vault write for beforeunload handler.
+   * Writes ALL session content to vault files immediately.
+   */
+  writeAllToVaultSync(): void {
+    for (const session of this.sessions.values()) {
+      session.writeToVaultSync();
+    }
+  }
+
+  /**
+   * Fix 9: Periodic vault writeback for all active sessions.
+   */
+  async writeAllToVault(): Promise<void> {
+    for (const session of this.sessions.values()) {
+      await session.writeToVault();
+    }
+  }
+
+  /**
    * Get all remote cursors for a specific document.
    */
   getRemoteCursors(docPath: string): CursorInfo[] {
@@ -283,23 +302,8 @@ export class CollabManager {
       this.reconnectTimer = null;
     }
 
-    const syncFolder = normalizePath(this.settings.syncFolderPath);
-
-    // Write each session's content back to the local vault file
-    for (const [docPath, session] of this.sessions) {
-      try {
-        const content = session.getContent();
-        const fullPath = normalizePath(`${syncFolder}/${docPath}`);
-        const file = this.app.vault.getAbstractFileByPath(fullPath);
-        if (file instanceof TFile) {
-          const currentContent = await this.app.vault.read(file);
-          if (currentContent !== content) {
-            await this.app.vault.modify(file, content);
-          }
-        }
-      } catch {
-        // Best effort — app is closing
-      }
+    // Each session writes its own content to vault in destroy()
+    for (const session of this.sessions.values()) {
       await session.destroy();
     }
     this.sessions.clear();
@@ -318,7 +322,8 @@ export class CollabManager {
     if (this.sessions.has(docPath) || !this.transport) return;
 
     const content = await this.app.vault.read(file);
-    const session = new CollabSession(docPath, this.transport, this.settings);
+    const syncFolder = normalizePath(this.settings.syncFolderPath);
+    const session = new CollabSession(docPath, this.transport, this.settings, this.app, syncFolder);
     await session.initialize(content);
     session.start();
     this.sessions.set(docPath, session);
@@ -343,6 +348,13 @@ export class CollabManager {
     this.reconcileInterval = window.setInterval(() => {
       this.reconcile();
     }, 15000);
+
+    // Fix 9: Periodic vault writeback every 60s (safety net)
+    const vaultWritebackId = window.setInterval(() => {
+      this.writeAllToVault();
+    }, 60000);
+    // Store for cleanup (reuse reconcileInterval's cleanup pattern)
+    (this as any)._vaultWritebackId = vaultWritebackId;
   }
 
   private stopPolling(): void {
@@ -357,6 +369,10 @@ export class CollabManager {
     if (this.reconcileInterval !== null) {
       window.clearInterval(this.reconcileInterval);
       this.reconcileInterval = null;
+    }
+    if ((this as any)._vaultWritebackId !== null) {
+      window.clearInterval((this as any)._vaultWritebackId);
+      (this as any)._vaultWritebackId = null;
     }
   }
 

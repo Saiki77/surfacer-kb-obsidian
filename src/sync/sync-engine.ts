@@ -191,7 +191,15 @@ export class SyncEngine {
     if (existing instanceof TFile) {
       await this.app.vault.modify(existing, content);
     } else {
-      await this.app.vault.create(fullPath, content);
+      try {
+        await this.app.vault.create(fullPath, content);
+      } catch {
+        // File may already exist (vault cache stale) — try modify
+        const retryFile = this.app.vault.getAbstractFileByPath(fullPath);
+        if (retryFile instanceof TFile) {
+          await this.app.vault.modify(retryFile, content);
+        }
+      }
     }
   }
 

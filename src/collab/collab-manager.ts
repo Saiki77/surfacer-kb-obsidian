@@ -93,7 +93,6 @@ export class CollabManager {
 
     this.transport.onStatus((connected) => {
       if (connected) {
-        console.log("KB Collab: WebSocket connected");
         this.reconnectDelay = 1000;
         // Re-subscribe all active sessions
         for (const [docPath] of this.sessions) {
@@ -102,7 +101,6 @@ export class CollabManager {
         // Scan for open files to bind
         this.scanAndBindEditors();
       } else if (!this.destroyed) {
-        console.log("KB Collab: WebSocket disconnected, scheduling reconnect");
         this.scheduleReconnect();
       }
     });
@@ -173,7 +171,7 @@ export class CollabManager {
         await session.destroy();
         this.sessions.delete(docPath);
         this.boundEditors.delete(docPath);
-        console.log(`KB Collab: Deactivated session for ${docPath}`);
+        // Session deactivated for docPath
       }
     }
   }
@@ -327,7 +325,6 @@ export class CollabManager {
     await session.initialize(content);
     session.start();
     this.sessions.set(docPath, session);
-    console.log(`KB Collab: Activated session for ${docPath}`);
   }
 
   private startPolling(): void {

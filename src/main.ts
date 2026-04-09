@@ -278,6 +278,37 @@ export default class KBSyncPlugin extends Plugin {
       })
     );
 
+    // Auto-sync: push file to S3 immediately on create/modify (no waiting for interval)
+    this.registerEvent(
+      this.app.vault.on("create", async (file) => {
+        if (!(file instanceof TFile)) return;
+        const syncFolder = normalizePath(this.settings.syncFolderPath);
+        if (!file.path.startsWith(syncFolder + "/")) return;
+        if (this.collabManager.isInCollabMode(file.path.slice(syncFolder.length + 1))) return;
+        // Debounce: wait 2s for the file to settle before pushing
+        setTimeout(async () => {
+          await this.syncEngine.push();
+          await this.persistSyncData();
+          if (this.sidebarView) this.sidebarView.refreshRemoteFiles();
+        }, 2000);
+      })
+    );
+
+    this.registerEvent(
+      this.app.vault.on("modify", async (file) => {
+        if (!(file instanceof TFile)) return;
+        const syncFolder = normalizePath(this.settings.syncFolderPath);
+        if (!file.path.startsWith(syncFolder + "/")) return;
+        if (this.collabManager.isInCollabMode(file.path.slice(syncFolder.length + 1))) return;
+        // Debounce: push after 5s of no further modifications
+        if ((this as any)._modifyTimer) clearTimeout((this as any)._modifyTimer);
+        (this as any)._modifyTimer = setTimeout(async () => {
+          await this.syncEngine.push();
+          await this.persistSyncData();
+        }, 5000);
+      })
+    );
+
     // Listen for folder renames and deletes within the sync folder
     this.registerEvent(
       this.app.vault.on("rename", async (file, oldPath) => {
@@ -374,7 +405,7 @@ export default class KBSyncPlugin extends Plugin {
     // When collab is active: pull less frequently (just for new file discovery),
     // skip push entirely (edits go via WebSocket)
     const pullMs = collabActive
-      ? 10 * 60 * 1000  // 10 min when collab active
+      ? 30 * 1000  // 30s when collab active (discover new files quickly)
       : this.settings.pullIntervalMinutes * 60 * 1000;
 
     this.pullIntervalId = window.setInterval(async () => {

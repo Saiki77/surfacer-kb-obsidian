@@ -199,6 +199,8 @@ export class CollabManager {
               const session = manager.sessions.get(docPath);
               if (session) {
                 session.handleLocalChanges(update.changes);
+                // Map comment anchor positions through the change
+                manager.mapCommentPositions(update.changes);
               }
               return;
             }
@@ -206,6 +208,25 @@ export class CollabManager {
         }
       }
     );
+  }
+
+  /**
+   * Map comment anchor positions through a ChangeSet so comments
+   * stay attached to their text after local edits.
+   */
+  private mapCommentPositions(changes: any): void {
+    // Access the plugin's activeComments via the app
+    // This is a lightweight approach — just map positions, no S3 calls
+    const plugin = (this.app as any).plugins?.plugins?.["kb-s3-sync"];
+    if (!plugin?.activeComments) return;
+    for (const comment of plugin.activeComments) {
+      try {
+        comment.anchorStart = changes.mapPos(comment.anchorStart, 1);
+        comment.anchorEnd = changes.mapPos(comment.anchorEnd, 1);
+      } catch {
+        // Position out of range — will be corrected on next S3 refresh
+      }
+    }
   }
 
   /**

@@ -1816,21 +1816,21 @@ export class KBSyncSidebarView extends ItemView {
           cls: "kb-sync-history-time",
         });
 
-        // Size delta
-        const prevLength = i + 1 < session.length ? session[i + 1].contentLength : 0;
-        const delta = entry.contentLength - prevLength;
-        if (prevLength > 0) {
-          const deltaText = delta >= 0 ? `+${delta}` : `${delta}`;
-          const deltaCls = delta >= 0 ? "kb-sync-history-delta-pos" : "kb-sync-history-delta-neg";
-          entryEl.createSpan({
-            text: `${deltaText} chars`,
-            cls: `kb-sync-history-delta ${deltaCls}`,
-          });
-        } else {
-          entryEl.createSpan({
-            text: `${entry.contentLength} chars`,
-            cls: "kb-sync-history-delta",
-          });
+        // Size delta: compare against next entry (older) in the FULL list
+        const fullIdx = this.historyEntries.indexOf(entry);
+        const prevEntry = fullIdx + 1 < this.historyEntries.length
+          ? this.historyEntries[fullIdx + 1]
+          : null;
+        if (prevEntry) {
+          const delta = entry.contentLength - prevEntry.contentLength;
+          if (delta !== 0) {
+            const deltaText = delta > 0 ? `+${delta}` : `${delta}`;
+            const deltaCls = delta > 0 ? "kb-sync-history-delta-pos" : "kb-sync-history-delta-neg";
+            entryEl.createSpan({
+              text: `${deltaText} chars`,
+              cls: `kb-sync-history-delta ${deltaCls}`,
+            });
+          }
         }
 
         // Click to view/restore
@@ -1852,17 +1852,25 @@ export class KBSyncSidebarView extends ItemView {
   private groupBySession(
     entries: Omit<HistoryEntry, "content">[]
   ): Omit<HistoryEntry, "content">[][] {
+    // Group by time proximity (5 min gap) + same user
     const groups: Omit<HistoryEntry, "content">[][] = [];
     let current: Omit<HistoryEntry, "content">[] = [];
-    let currentSession = "";
 
     for (const entry of entries) {
-      if (entry.sessionId !== currentSession) {
-        if (current.length > 0) groups.push(current);
+      if (current.length === 0) {
         current = [entry];
-        currentSession = entry.sessionId;
-      } else {
+        continue;
+      }
+      const prev = current[current.length - 1];
+      const timeDiff = Math.abs(
+        new Date(prev.timestamp).getTime() - new Date(entry.timestamp).getTime()
+      );
+      // Same session if same user AND within 5 minutes
+      if (prev.userId === entry.userId && timeDiff < 5 * 60 * 1000) {
         current.push(entry);
+      } else {
+        groups.push(current);
+        current = [entry];
       }
     }
     if (current.length > 0) groups.push(current);

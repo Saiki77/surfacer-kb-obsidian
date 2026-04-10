@@ -25,6 +25,8 @@ export class CollabManager {
   private cursorInterval: number | null = null;
   private scanInterval: number | null = null;
   private reconcileInterval: number | null = null;
+  private vaultWritebackId: number | null = null;
+  private activating = new Set<string>(); // Bug 2: prevent double-session creation
 
   // Track which EditorViews are bound to which sessions
   private boundEditors: Map<string, EditorView> = new Map();
@@ -93,9 +95,10 @@ export class CollabManager {
     this.transport.onStatus((connected) => {
       if (connected) {
         this.reconnectDelay = 1000;
-        // Re-subscribe all active sessions
-        for (const [docPath] of this.sessions) {
+        // Re-subscribe all active sessions and flush offline queues
+        for (const [docPath, session] of this.sessions) {
           this.transport!.subscribe(docPath);
+          session.flushOfflineQueue();
         }
         // Scan for open files to bind
         this.scanAndBindEditors();
@@ -140,9 +143,14 @@ export class CollabManager {
       const cm = (mdView.editor as any)?.cm as EditorView | undefined;
       if (!cm) continue;
 
-      // Create session if needed
-      if (!this.sessions.has(docPath)) {
-        await this.activateSession(docPath, file);
+      // Create session if needed (with race guard)
+      if (!this.sessions.has(docPath) && !this.activating.has(docPath)) {
+        this.activating.add(docPath);
+        try {
+          await this.activateSession(docPath, file);
+        } finally {
+          this.activating.delete(docPath);
+        }
       }
 
       // Bind editor if not already bound (or if the EditorView changed)
@@ -154,20 +162,15 @@ export class CollabManager {
     }
 
     // Unbind sessions for files that are no longer open
-    for (const [docPath, session] of this.sessions) {
-      if (!openDocPaths.has(docPath)) {
-        // Write final content back to the local file before destroying
-        const content = session.getContent();
-        const fullPath = normalizePath(`${syncFolder}/${docPath}`);
-        const file = this.app.vault.getAbstractFileByPath(fullPath);
-        if (file instanceof TFile) {
-          // Only write back if content differs to avoid unnecessary vault events
-          const currentContent = await this.app.vault.read(file);
-          if (currentContent !== content) {
-            await this.app.vault.modify(file, content);
-          }
-        }
-        await session.destroy();
+    // Snapshot the set first to avoid mutation during async iteration (Bug 3)
+    const toClose = [...this.sessions].filter(([p]) => !openDocPaths.has(p));
+    for (const [docPath, session] of toClose) {
+      // Identity check: skip if session was already replaced by a concurrent call
+      if (this.sessions.get(docPath) !== session) continue;
+
+      await session.destroy(); // session.destroy() writes to vault internally
+      // Only delete if it's still OUR session (not replaced during await)
+      if (this.sessions.get(docPath) === session) {
         this.sessions.delete(docPath);
         this.boundEditors.delete(docPath);
         // Session deactivated for docPath
@@ -350,7 +353,7 @@ export class CollabManager {
       this.writeAllToVault();
     }, 60000);
     // Store for cleanup (reuse reconcileInterval's cleanup pattern)
-    (this as any)._vaultWritebackId = vaultWritebackId;
+    this.vaultWritebackId = vaultWritebackId;
   }
 
   private stopPolling(): void {
@@ -366,9 +369,9 @@ export class CollabManager {
       window.clearInterval(this.reconcileInterval);
       this.reconcileInterval = null;
     }
-    if ((this as any)._vaultWritebackId !== null) {
-      window.clearInterval((this as any)._vaultWritebackId);
-      (this as any)._vaultWritebackId = null;
+    if (this.vaultWritebackId !== null) {
+      window.clearInterval(this.vaultWritebackId);
+      this.vaultWritebackId = null;
     }
   }
 

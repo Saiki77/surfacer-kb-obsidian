@@ -371,9 +371,17 @@ export class SyncEngine {
       }
 
       // Clean up entries for files deleted from both sides
+      // Also update "just-pushed" timestamps to real S3 timestamps
       for (const path of plan.unchanged) {
         if (!localFiles.has(path) && !remoteFiles.has(path)) {
           this.manifest.removeEntry(path);
+        } else {
+          const entry = this.manifest.getEntry(path);
+          const remote = remoteFiles.get(path);
+          if (entry && remote && entry.remoteLastModified === "just-pushed") {
+            entry.remoteLastModified = remote.lastModified;
+            this.manifest.setEntry(path, entry);
+          }
         }
       }
 
@@ -448,14 +456,14 @@ export class SyncEngine {
           if (hashContent(remoteContent) === hashContent(content)) {
             // Content is the same — just push (updates the timestamp in manifest)
             await this.pushToS3(path, content);
-            this.manifest.setEntry(path, this.makeSyncedEntry(path, hashContent(content), new Date().toISOString()));
+            this.manifest.setEntry(path, this.makeSyncedEntry(path, hashContent(content), "just-pushed"));
             this.logActivity("push", path, "Uploaded to remote");
             continue;
           }
           // If remote content matches manifest base, only local changed — safe to push
           if (manifestEntry.remoteContentHash && hashContent(remoteContent) === manifestEntry.remoteContentHash) {
             await this.pushToS3(path, content);
-            this.manifest.setEntry(path, this.makeSyncedEntry(path, hashContent(content), new Date().toISOString()));
+            this.manifest.setEntry(path, this.makeSyncedEntry(path, hashContent(content), "just-pushed"));
             this.logActivity("push", path, "Uploaded to remote");
             continue;
           }
@@ -486,7 +494,7 @@ export class SyncEngine {
             // Clean merge — push the merged content
             await this.pushToS3(path, mergeResult.content);
             await this.writeLocalFile(path, mergeResult.content);
-            this.manifest.setEntry(path, this.makeSyncedEntry(path, hashContent(mergeResult.content), new Date().toISOString()));
+            this.manifest.setEntry(path, this.makeSyncedEntry(path, hashContent(mergeResult.content), "just-pushed"));
             this.logActivity("push", path, "Auto-merged local + remote changes");
             try { await historyManager.saveSnapshot(this.settings, path, mergeResult.content, "auto-merge", `merge-${Date.now()}`); } catch {}
             new Notice(`Merged: ${path.split("/").pop()}`);
@@ -494,7 +502,7 @@ export class SyncEngine {
             // Conflicts — push merged content with conflict markers, let user resolve
             await this.pushToS3(path, mergeResult.content);
             await this.writeLocalFile(path, mergeResult.content);
-            this.manifest.setEntry(path, this.makeSyncedEntry(path, hashContent(mergeResult.content), new Date().toISOString()));
+            this.manifest.setEntry(path, this.makeSyncedEntry(path, hashContent(mergeResult.content), "just-pushed"));
             this.logActivity("conflict", path, `Auto-merged with ${mergeResult.conflicts} conflict(s)`);
             try { await historyManager.saveSnapshot(this.settings, path, mergeResult.content, "merge-conflicts", `merge-${Date.now()}`); } catch {}
             new Notice(`Merged with ${mergeResult.conflicts} conflict(s): ${path.split("/").pop()}`);
@@ -508,7 +516,7 @@ export class SyncEngine {
           this.makeSyncedEntry(
             path,
             hashContent(content),
-            new Date().toISOString()
+            "just-pushed"
           )
         );
         this.logActivity("push", path, "Uploaded to remote");
@@ -535,7 +543,7 @@ export class SyncEngine {
           this.makeSyncedEntry(
             path,
             hashContent(content),
-            new Date().toISOString()
+            "just-pushed"
           )
         );
         this.logActivity("push", path, "New file uploaded");
@@ -646,7 +654,7 @@ export class SyncEngine {
           this.makeSyncedEntry(
             path,
             hashContent(result.content),
-            new Date().toISOString()
+            "just-pushed"
           )
         );
       } else {
@@ -701,7 +709,7 @@ export class SyncEngine {
       this.makeSyncedEntry(
         path,
         hashContent(finalContent),
-        new Date().toISOString()
+        "just-pushed"
       )
     );
     this.logActivity("conflict", path, "Resolved");
@@ -722,7 +730,7 @@ export class SyncEngine {
               this.makeSyncedEntry(
                 op.relativePath,
                 hashContent(content),
-                new Date().toISOString()
+                "just-pushed"
               )
             );
           }

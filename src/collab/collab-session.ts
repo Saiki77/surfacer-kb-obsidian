@@ -106,8 +106,9 @@ export class CollabSession {
     this.transport.sendUpdate(this.docPath, fullState);
 
     this.ydocUpdateHandler = (update: Uint8Array, origin: any) => {
-      // Skip remote updates (already came from peer) and isSyncing (CM6 resync echo)
-      if (origin === "remote" || this.isSyncing) return;
+      // Only skip remote updates (already came from peer)
+      // Do NOT skip on isSyncing — that guard belongs in handleLocalChanges/ytextObserver only
+      if (origin === "remote") return;
 
       // This fires for ALL local changes (including origin="local-to-yjs")
       this.snapshotDirty = true;
@@ -185,6 +186,15 @@ export class CollabSession {
   }
 
   activate(): void { this._isActive = true; }
+
+  /** Flush offline queue immediately (called on WebSocket reconnect) */
+  flushOfflineQueue(): void {
+    if (this.transport.connected && this.offlineQueue.length > 0) {
+      const merged = Y.mergeUpdates(this.offlineQueue);
+      this.offlineQueue = [];
+      this.transport.sendUpdate(this.docPath, merged);
+    }
+  }
 
   private scheduleResync(): void {
     if (this.resyncTimer !== null) return;
@@ -366,7 +376,10 @@ export class CollabSession {
     if (this.historyTimer !== null) window.clearTimeout(this.historyTimer);
     if (this.historySessionTimer !== null) window.clearTimeout(this.historySessionTimer);
 
-    // Fix 7: Flush pending outgoing updates (best effort)
+    // Flush offline queue (edits made while WebSocket was down)
+    this.flushOfflineQueue();
+
+    // Flush pending outgoing batch
     if (this.outBatchTimer !== null) {
       window.clearTimeout(this.outBatchTimer);
       this.flushOutgoingUpdates();

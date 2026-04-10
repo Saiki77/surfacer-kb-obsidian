@@ -54,8 +54,13 @@ export function detectChanges(
 
     if (entry && local && remote) {
       // CASE A: File exists everywhere
-      const remoteChanged =
-        remote.lastModified !== entry.remoteLastModified;
+      // Remote changed detection:
+      // If remoteLastModified is "just-pushed", we just pushed this file
+      // and the S3 timestamp will differ from our sentinel — skip the
+      // timestamp check and use content hash instead
+      const remoteChanged = entry.remoteLastModified === "just-pushed"
+        ? false  // We just pushed — treat remote as unchanged until next full pull
+        : remote.lastModified !== entry.remoteLastModified;
       const localChanged =
         local.contentHash !== entry.baseContentHash;
 

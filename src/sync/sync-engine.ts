@@ -184,6 +184,8 @@ export class SyncEngine {
     const map = new Map<string, RemoteFileInfo>();
     const items = await s3.listAllObjects(this.settings);
     for (const item of items) {
+      // Skip internal prefixes (_backups, _history, _templates, etc.)
+      if (item.key.startsWith("_")) continue;
       if (item.key.endsWith(".md")) {
         map.set(item.key, {
           relativePath: item.key,
@@ -316,12 +318,12 @@ export class SyncEngine {
           this.logActivity("pull", path, "Skipped (file open in editor)");
           continue;
         }
-        // Backup local version before overwriting (if it exists and has content)
+        const { body } = await s3.getObject(this.settings, path);
+        // Only backup if local content actually differs from remote
         const localContent = await this.readLocalFile(path);
-        if (localContent && localContent.length > 0) {
+        if (localContent && localContent.length > 0 && localContent !== body) {
           await this.backupFile(path, localContent, "local");
         }
-        const { body } = await s3.getObject(this.settings, path);
         await this.writeLocalFile(path, body);
         const remote = remoteFiles.get(path)!;
         this.manifest.setEntry(

@@ -40,6 +40,12 @@ export async function saveSnapshot(
   sessionId: string,
   existingId?: string
 ): Promise<string> {
+  // Strip conflict markers before saving to history
+  const cleanContent = content
+    .replace(/^<<<<<<< LOCAL\n/gm, "")
+    .replace(/^=======\n/gm, "")
+    .replace(/^>>>>>>> REMOTE\n/gm, "");
+
   const timestamp = new Date().toISOString();
   const id = existingId || `${timestamp.replace(/[:.]/g, "-")}-${userId}`;
 
@@ -48,10 +54,10 @@ export async function saveSnapshot(
     docPath,
     userId,
     timestamp,
-    content,
+    content: cleanContent,
     summary: `Edited by ${userId}`,
     sessionId,
-    contentLength: content.length,
+    contentLength: cleanContent.length,
   };
 
   await s3.putObject(

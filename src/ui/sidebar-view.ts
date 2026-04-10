@@ -1866,7 +1866,23 @@ export class KBSyncSidebarView extends ItemView {
             entry.id
           );
           if (full) {
-            new HistoryPreviewModal(this.app, this.plugin, full).open();
+            // Load previous snapshot to diff against
+            const fullIdx2 = this.historyEntries.indexOf(entry);
+            const prevEntryMeta = fullIdx2 + 1 < this.historyEntries.length
+              ? this.historyEntries[fullIdx2 + 1]
+              : null;
+            let prevContent = "";
+            if (prevEntryMeta) {
+              try {
+                const prev = await historyManager.loadSnapshot(
+                  this.plugin.settings,
+                  this.historyDocPath!,
+                  prevEntryMeta.id
+                );
+                if (prev) prevContent = prev.content;
+              } catch {}
+            }
+            new HistoryPreviewModal(this.app, this.plugin, full, prevContent).open();
           }
         });
         entryEl.style.cursor = "pointer";
@@ -1937,11 +1953,13 @@ export class KBSyncSidebarView extends ItemView {
 class HistoryPreviewModal extends Modal {
   private plugin: KBSyncPlugin;
   private entry: HistoryEntry;
+  private prevContent: string;
 
-  constructor(app: any, plugin: KBSyncPlugin, entry: HistoryEntry) {
+  constructor(app: any, plugin: KBSyncPlugin, entry: HistoryEntry, prevContent: string = "") {
     super(app);
     this.plugin = plugin;
     this.entry = entry;
+    this.prevContent = prevContent;
   }
 
   async onOpen(): Promise<void> {
@@ -1969,23 +1987,17 @@ class HistoryPreviewModal extends Modal {
 
     const body = contentEl.createDiv({ cls: "kb-sync-history-modal-body" });
 
-    // Load current file content for diff
-    const syncFolder = this.plugin.settings.syncFolderPath;
-    const fullPath = `${syncFolder}/${this.entry.docPath}`;
-    const file = this.app.vault.getAbstractFileByPath(fullPath);
-    let currentContent = "";
-    if (file) {
-      try { currentContent = await this.app.vault.read(file as any); } catch {}
-    }
+    // Diff: compare previous snapshot → this snapshot (what changed in this version)
+    const prevContent = this.prevContent;
 
     // Show diff view by default
-    this.renderDiff(body, this.entry.content, currentContent);
+    this.renderDiff(body, prevContent, this.entry.content);
 
     diffTab.addEventListener("click", () => {
       diffTab.addClass("kb-sync-history-modal-tab-active");
       fullTab.removeClass("kb-sync-history-modal-tab-active");
       body.empty();
-      this.renderDiff(body, this.entry.content, currentContent);
+      this.renderDiff(body, prevContent, this.entry.content);
     });
 
     fullTab.addEventListener("click", () => {

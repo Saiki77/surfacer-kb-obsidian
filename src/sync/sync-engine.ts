@@ -671,22 +671,22 @@ export class SyncEngine {
     }
 
     await this.writeLocalFile(path, finalContent);
-    const { metadata } = parseFrontmatter(result.content);
+    const { metadata } = parseFrontmatter(finalContent);
     await s3.putObject(
       this.settings,
       path,
-      result.content,
+      finalContent,
       metadataToS3Headers(metadata)
     );
     this.manifest.setEntry(
       path,
       this.makeSyncedEntry(
         path,
-        hashContent(result.content),
+        hashContent(finalContent),
         new Date().toISOString()
       )
     );
-    this.logActivity("conflict", path, `Resolved: ${result.action}`);
+    this.logActivity("conflict", path, "Resolved");
   }
 
   private async drainQueue(): Promise<void> {

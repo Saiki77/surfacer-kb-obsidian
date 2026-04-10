@@ -287,6 +287,16 @@ export class CollabSession {
   getYDoc(): Y.Doc { return this.ydoc; }
   getBoundView(): EditorView | null { return this.view; }
 
+  /** Encode state vector for reconciliation */
+  encodeStateVector(): Uint8Array {
+    return Y.encodeStateVector(this.ydoc);
+  }
+
+  /** Encode state diff for a given remote state vector */
+  encodeStateDiff(remoteSV: Uint8Array): Uint8Array {
+    return Y.encodeStateAsUpdate(this.ydoc, remoteSV);
+  }
+
   /**
    * Fix 1: Write Yjs content to the local vault file.
    * Called before destroy() and periodically as safety net.

@@ -329,6 +329,7 @@ export class SyncEngine {
           this.makeSyncedEntry(path, hashContent(body), remote.lastModified)
         );
         this.logActivity("pull", path, "Updated from remote");
+        try { await historyManager.saveSnapshot(this.settings, path, body, "sync-pull", `pull-${Date.now()}`); } catch {}
       }
 
       // New remote files
@@ -342,6 +343,7 @@ export class SyncEngine {
           this.makeSyncedEntry(path, hashContent(body), remote.lastModified)
         );
         this.logActivity("pull", path, "New file from remote");
+        try { await historyManager.saveSnapshot(this.settings, path, body, "sync-pull", `pull-${Date.now()}`); } catch {}
       }
 
       // Deleted from remote, local unchanged
@@ -468,6 +470,7 @@ export class SyncEngine {
             await this.writeLocalFile(path, mergeResult.content);
             this.manifest.setEntry(path, this.makeSyncedEntry(path, hashContent(mergeResult.content), new Date().toISOString()));
             this.logActivity("push", path, "Auto-merged local + remote changes");
+            try { await historyManager.saveSnapshot(this.settings, path, mergeResult.content, "auto-merge", `merge-${Date.now()}`); } catch {}
             new Notice(`Merged: ${path.split("/").pop()}`);
           } else {
             // Conflicts — push merged content with conflict markers, let user resolve
@@ -475,6 +478,7 @@ export class SyncEngine {
             await this.writeLocalFile(path, mergeResult.content);
             this.manifest.setEntry(path, this.makeSyncedEntry(path, hashContent(mergeResult.content), new Date().toISOString()));
             this.logActivity("conflict", path, `Auto-merged with ${mergeResult.conflicts} conflict(s)`);
+            try { await historyManager.saveSnapshot(this.settings, path, mergeResult.content, "merge-conflicts", `merge-${Date.now()}`); } catch {}
             new Notice(`Merged with ${mergeResult.conflicts} conflict(s): ${path.split("/").pop()}`);
           }
           continue;
@@ -645,6 +649,7 @@ export class SyncEngine {
     if (mergeResult.success) {
       finalContent = mergeResult.content;
       this.logActivity("conflict", path, "Auto-merged successfully");
+      try { await historyManager.saveSnapshot(this.settings, path, finalContent, "auto-merge", `merge-${Date.now()}`); } catch {}
       new Notice(`Auto-merged: ${path.split("/").pop()}`);
     } else if (mergeResult.conflicts <= 3) {
       // Few conflicts — use merged content with markers, let user clean up

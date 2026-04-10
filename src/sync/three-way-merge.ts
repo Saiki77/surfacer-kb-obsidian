@@ -19,6 +19,19 @@ export function threeWayMerge(
   local: string,
   remote: string
 ): MergeResult {
+  try {
+    return doMerge(base, local, remote);
+  } catch {
+    // If merge fails for any reason, return both with conflict markers
+    return {
+      success: false,
+      content: `<<<<<<< LOCAL\n${local}\n=======\n${remote}\n>>>>>>> REMOTE`,
+      conflicts: 1,
+    };
+  }
+}
+
+function doMerge(base: string, local: string, remote: string): MergeResult {
   const baseLines = base.split("\n");
   const localLines = local.split("\n");
   const remoteLines = remote.split("\n");
@@ -155,8 +168,8 @@ function longestCommonSubsequence(a: string[], b: string[]): LCSMatch[] {
   const m = a.length;
   const n = b.length;
 
-  // For very large documents, use a faster approach
-  if (m * n > 1_000_000) {
+  // Use fast approach for anything non-trivial (>500 lines either side)
+  if (m > 500 || n > 500 || m * n > 250_000) {
     return fastLCS(a, b);
   }
 

@@ -4,7 +4,6 @@
  * as soon as it's opened. No presence-gating — just like Google Docs.
  */
 
-import * as Y from "yjs";
 import { App, MarkdownView, TFile, normalizePath } from "obsidian";
 import { ViewPlugin, EditorView } from "@codemirror/view";
 import type { ViewUpdate, PluginValue } from "@codemirror/view";
@@ -80,7 +79,7 @@ export class CollabManager {
     this.transport.onSyncVector((docPath, remoteSV, userId) => {
       const session = this.sessions.get(docPath);
       if (!session) return;
-      const diff = Y.encodeStateAsUpdate(session.getYDoc(), remoteSV);
+      const diff = session.encodeStateDiff(remoteSV);
       if (diff.length > 2) { // >2 bytes means there's actual data
         this.transport!.sendSyncDiff(docPath, diff);
       }
@@ -381,7 +380,7 @@ export class CollabManager {
   private reconcile(): void {
     if (!this.transport?.connected) return;
     for (const [docPath, session] of this.sessions) {
-      const sv = Y.encodeStateVector(session.getYDoc());
+      const sv = session.encodeStateVector();
       this.transport.sendSyncVector(docPath, sv);
     }
     // Refresh permission cache

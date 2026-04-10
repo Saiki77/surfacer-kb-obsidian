@@ -2009,57 +2009,120 @@ class HistoryPreviewModal extends Modal {
   }
 
   private renderDiff(container: HTMLElement, oldContent: string, newContent: string): void {
+    if (oldContent === newContent) {
+      container.createDiv({ cls: "kb-sync-diff-same", text: "No changes from current version" });
+      return;
+    }
+
     const oldLines = oldContent.split("\n");
     const newLines = newContent.split("\n");
-
     const diffEl = container.createDiv({ cls: "kb-sync-diff-view" });
 
-    // Simple line-by-line diff
-    const maxLines = Math.max(oldLines.length, newLines.length);
-    let i = 0, j = 0;
+    // Match lines using greedy LCS
+    const matched = this.matchLines(oldLines, newLines);
 
-    while (i < oldLines.length || j < newLines.length) {
-      const oldLine = i < oldLines.length ? oldLines[i] : undefined;
-      const newLine = j < newLines.length ? newLines[j] : undefined;
-
-      if (oldLine === newLine) {
-        // Unchanged line
-        const lineEl = diffEl.createDiv({ cls: "kb-sync-diff-line kb-sync-diff-unchanged" });
-        lineEl.createSpan({ cls: "kb-sync-diff-gutter", text: String(i + 1) });
-        lineEl.createSpan({ cls: "kb-sync-diff-text", text: oldLine || "" });
-        i++; j++;
-      } else if (oldLine !== undefined && (newLine === undefined || !newLines.slice(j, j + 5).includes(oldLine))) {
-        // Removed line (in old, not in new nearby)
-        const lineEl = diffEl.createDiv({ cls: "kb-sync-diff-line kb-sync-diff-removed" });
-        lineEl.createSpan({ cls: "kb-sync-diff-gutter", text: "-" });
-        lineEl.createSpan({ cls: "kb-sync-diff-text", text: oldLine });
-        i++;
-      } else if (newLine !== undefined && (oldLine === undefined || !oldLines.slice(i, i + 5).includes(newLine))) {
-        // Added line (in new, not in old nearby)
-        const lineEl = diffEl.createDiv({ cls: "kb-sync-diff-line kb-sync-diff-added" });
-        lineEl.createSpan({ cls: "kb-sync-diff-gutter", text: "+" });
-        lineEl.createSpan({ cls: "kb-sync-diff-text", text: newLine });
-        j++;
+    let oi = 0, ni = 0;
+    for (const m of matched) {
+      // Removed lines before this match
+      while (oi < m.oldIdx) {
+        this.renderDiffLine(diffEl, "-", oldLines[oi], "kb-sync-diff-removed");
+        oi++;
+      }
+      // Added lines before this match
+      while (ni < m.newIdx) {
+        this.renderDiffLine(diffEl, "+", newLines[ni], "kb-sync-diff-added");
+        ni++;
+      }
+      // Matched line
+      if (oldLines[oi] === newLines[ni]) {
+        this.renderDiffLine(diffEl, String(oi + 1), oldLines[oi], "kb-sync-diff-unchanged");
       } else {
-        // Both exist but different — show as remove + add
-        if (oldLine !== undefined) {
-          const lineEl = diffEl.createDiv({ cls: "kb-sync-diff-line kb-sync-diff-removed" });
-          lineEl.createSpan({ cls: "kb-sync-diff-gutter", text: "-" });
-          lineEl.createSpan({ cls: "kb-sync-diff-text", text: oldLine });
-          i++;
-        }
-        if (newLine !== undefined) {
-          const lineEl = diffEl.createDiv({ cls: "kb-sync-diff-line kb-sync-diff-added" });
-          lineEl.createSpan({ cls: "kb-sync-diff-gutter", text: "+" });
-          lineEl.createSpan({ cls: "kb-sync-diff-text", text: newLine });
-          j++;
+        // Same position match but content differs: show word-level diff
+        this.renderModifiedLine(diffEl, oldLines[oi], newLines[ni]);
+      }
+      oi++; ni++;
+    }
+    // Remaining removed
+    while (oi < oldLines.length) {
+      this.renderDiffLine(diffEl, "-", oldLines[oi], "kb-sync-diff-removed");
+      oi++;
+    }
+    // Remaining added
+    while (ni < newLines.length) {
+      this.renderDiffLine(diffEl, "+", newLines[ni], "kb-sync-diff-added");
+      ni++;
+    }
+  }
+
+  private renderDiffLine(container: HTMLElement, gutter: string, text: string, cls: string): void {
+    const lineEl = container.createDiv({ cls: `kb-sync-diff-line ${cls}` });
+    lineEl.createSpan({ cls: "kb-sync-diff-gutter", text: gutter });
+    lineEl.createSpan({ cls: "kb-sync-diff-text", text: text || " " });
+  }
+
+  /** Render a modified line with word-level red/green highlights */
+  private renderModifiedLine(container: HTMLElement, oldLine: string, newLine: string): void {
+    // Removed version with changed words highlighted
+    const remEl = container.createDiv({ cls: "kb-sync-diff-line kb-sync-diff-removed" });
+    remEl.createSpan({ cls: "kb-sync-diff-gutter", text: "-" });
+    const remText = remEl.createSpan({ cls: "kb-sync-diff-text" });
+    this.renderWordDiff(remText, oldLine, newLine, "old");
+
+    // Added version with changed words highlighted
+    const addEl = container.createDiv({ cls: "kb-sync-diff-line kb-sync-diff-added" });
+    addEl.createSpan({ cls: "kb-sync-diff-gutter", text: "+" });
+    const addText = addEl.createSpan({ cls: "kb-sync-diff-text" });
+    this.renderWordDiff(addText, oldLine, newLine, "new");
+  }
+
+  /** Highlight changed words within a line */
+  private renderWordDiff(container: HTMLElement, oldLine: string, newLine: string, side: "old" | "new"): void {
+    const oldWords = oldLine.split(/(\s+)/);
+    const newWords = newLine.split(/(\s+)/);
+    const line = side === "old" ? oldWords : newWords;
+    const other = side === "old" ? newWords : oldWords;
+
+    // Find common prefix and suffix at word level
+    let prefix = 0;
+    while (prefix < Math.min(oldWords.length, newWords.length) && oldWords[prefix] === newWords[prefix]) {
+      prefix++;
+    }
+    let suffix = 0;
+    while (
+      suffix < Math.min(oldWords.length - prefix, newWords.length - prefix) &&
+      oldWords[oldWords.length - 1 - suffix] === newWords[newWords.length - 1 - suffix]
+    ) {
+      suffix++;
+    }
+
+    const changeStart = prefix;
+    const changeEnd = line.length - suffix;
+
+    for (let w = 0; w < line.length; w++) {
+      if (w >= changeStart && w < changeEnd) {
+        container.createSpan({ cls: "kb-sync-diff-word-highlight", text: line[w] });
+      } else {
+        container.createSpan({ text: line[w] });
+      }
+    }
+  }
+
+  /** Greedy LCS matching for lines */
+  private matchLines(oldLines: string[], newLines: string[]): { oldIdx: number; newIdx: number }[] {
+    const matches: { oldIdx: number; newIdx: number }[] = [];
+    const newUsed = new Set<number>();
+
+    for (let i = 0; i < oldLines.length; i++) {
+      for (let j = 0; j < newLines.length; j++) {
+        if (newUsed.has(j)) continue;
+        if (oldLines[i] === newLines[j]) {
+          matches.push({ oldIdx: i, newIdx: j });
+          newUsed.add(j);
+          break;
         }
       }
     }
-
-    if (oldContent === newContent) {
-      diffEl.createDiv({ cls: "kb-sync-diff-same", text: "No changes from current version" });
-    }
+    return matches;
   }
 
   private renderFullContent(container: HTMLElement): void {

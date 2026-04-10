@@ -1446,6 +1446,20 @@
   text-decoration: line-through;
 }
 
+.kb-sync-diff-word-highlight {
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+.kb-sync-diff-removed .kb-sync-diff-word-highlight {
+  background: rgba(239, 68, 68, 0.35);
+}
+
+.kb-sync-diff-added .kb-sync-diff-word-highlight {
+  background: rgba(34, 197, 94, 0.35);
+}
+
 .kb-sync-diff-same {
   padding: 16px;
   text-align: center;

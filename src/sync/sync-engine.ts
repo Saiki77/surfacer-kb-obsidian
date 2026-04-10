@@ -98,6 +98,24 @@ export class SyncEngine {
    * Check if a file is currently open in any editor tab.
    * Open files should NEVER be silently overwritten by pull.
    */
+  /**
+   * Save a backup of content to S3 before overwriting.
+   * Backups stored in _backups/{path}/{timestamp}-{source}.md
+   */
+  private async backupFile(
+    relativePath: string,
+    content: string,
+    source: "local" | "remote"
+  ): Promise<void> {
+    try {
+      const ts = new Date().toISOString().replace(/[:.]/g, "-");
+      const backupKey = `_backups/${relativePath}/${ts}-${source}.md`;
+      await s3.putObject(this.settings, backupKey, content, {}, "text/markdown");
+    } catch {
+      // Backup is best-effort — don't block sync
+    }
+  }
+
   private isFileOpen(relativePath: string): boolean {
     const fullPath = this.vaultPath(relativePath);
     for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
@@ -290,13 +308,17 @@ export class SyncEngine {
         remoteFiles
       );
 
-      // Pull: remote changed, local didn't
+      // Pull: remote changed, local didn't (with backup)
       for (const path of plan.pull) {
         if (this.isInCollabMode(path)) continue;
-        // NEVER overwrite a file that's open in an editor
         if (this.isFileOpen(path)) {
           this.logActivity("pull", path, "Skipped (file open in editor)");
           continue;
+        }
+        // Backup local version before overwriting (if it exists and has content)
+        const localContent = await this.readLocalFile(path);
+        if (localContent && localContent.length > 0) {
+          await this.backupFile(path, localContent, "local");
         }
         const { body } = await s3.getObject(this.settings, path);
         await this.writeLocalFile(path, body);
@@ -404,12 +426,24 @@ export class SyncEngine {
         remoteFiles
       );
 
-      // Push: local changed, remote didn't
+      // Push: local changed, remote didn't (with safety check)
       const pushSessionId = `${Date.now()}-sync`;
       for (const path of plan.push) {
-        if (this.isInCollabMode(path)) continue; // Handled by collab session
+        if (this.isInCollabMode(path)) continue;
         const content = await this.readLocalFile(path);
         if (!content) continue;
+
+        // Safety: verify remote hasn't ALSO changed (MCP/external write)
+        const remote = remoteFiles.get(path);
+        const manifestEntry = this.manifest.getEntry(path);
+        if (remote && manifestEntry && remote.lastModified !== manifestEntry.remoteLastModified) {
+          // BOTH sides changed — don't push, back up local instead
+          await this.backupFile(path, content, "local");
+          this.logActivity("conflict", path, "Both changed — local backed up, remote preserved");
+          new Notice(`Conflict: ${path.split("/").pop()} — local version backed up`);
+          continue;
+        }
+
         await this.pushToS3(path, content);
         this.manifest.setEntry(
           path,

@@ -2060,23 +2060,8 @@ class HistoryPreviewModal extends Modal {
       }
     }
 
-    // Render changed region — pair up old/new lines for word-level diff
-    const pairCount = Math.min(oldChanged.length, newChanged.length);
-    for (let i = 0; i < pairCount; i++) {
-      if (oldChanged[i] === newChanged[i]) {
-        this.renderDiffLine(diffEl, String(prefixLen + i + 1), oldChanged[i], "kb-sync-diff-unchanged");
-      } else {
-        this.renderModifiedLine(diffEl, oldChanged[i], newChanged[i]);
-      }
-    }
-    // Extra removed lines
-    for (let i = pairCount; i < oldChanged.length; i++) {
-      this.renderDiffLine(diffEl, "-", oldChanged[i], "kb-sync-diff-removed");
-    }
-    // Extra added lines
-    for (let i = pairCount; i < newChanged.length; i++) {
-      this.renderDiffLine(diffEl, "+", newChanged[i], "kb-sync-diff-added");
-    }
+    // Render changed region using LCS to properly handle insertions/deletions
+    this.renderChangedRegion(diffEl, oldChanged, newChanged, prefixLen);
 
     // Render common suffix (collapsed if long)
     if (suffixLen > 0) {
@@ -2088,6 +2073,75 @@ class HistoryPreviewModal extends Modal {
       if (suffixLen > 3) {
         diffEl.createDiv({ cls: "kb-sync-diff-collapse", text: `... ${suffixLen - 3} unchanged lines ...` });
       }
+    }
+  }
+
+  /** Render a changed region using LCS to properly handle insertions/deletions */
+  private renderChangedRegion(
+    container: HTMLElement,
+    oldLines: string[],
+    newLines: string[],
+    lineOffset: number
+  ): void {
+    // Pure insertion: old is empty
+    if (oldLines.length === 0) {
+      for (const line of newLines) {
+        this.renderDiffLine(container, "+", line, "kb-sync-diff-added");
+      }
+      return;
+    }
+    // Pure deletion: new is empty
+    if (newLines.length === 0) {
+      for (const line of oldLines) {
+        this.renderDiffLine(container, "-", line, "kb-sync-diff-removed");
+      }
+      return;
+    }
+
+    // Find matching lines within the changed region (simple greedy forward match)
+    const matches: { oi: number; ni: number }[] = [];
+    let lastNi = -1;
+    for (let oi = 0; oi < oldLines.length; oi++) {
+      for (let ni = lastNi + 1; ni < newLines.length; ni++) {
+        if (oldLines[oi] === newLines[ni]) {
+          matches.push({ oi, ni });
+          lastNi = ni;
+          break;
+        }
+      }
+    }
+
+    let oi = 0, ni = 0;
+    for (const m of matches) {
+      // Removed lines before this match
+      while (oi < m.oi) {
+        this.renderDiffLine(container, "-", oldLines[oi], "kb-sync-diff-removed");
+        oi++;
+      }
+      // Added lines before this match
+      while (ni < m.ni) {
+        this.renderDiffLine(container, "+", newLines[ni], "kb-sync-diff-added");
+        ni++;
+      }
+      // Matching line (unchanged within the changed region)
+      this.renderDiffLine(container, String(lineOffset + m.ni + 1), oldLines[oi], "kb-sync-diff-unchanged");
+      oi++; ni++;
+    }
+    // Remaining removed
+    while (oi < oldLines.length) {
+      // Check if there's a corresponding new line to pair for word-level diff
+      if (ni < newLines.length) {
+        this.renderModifiedLine(container, oldLines[oi], newLines[ni]);
+        oi++; ni++;
+      } else {
+        this.renderDiffLine(container, "-", oldLines[oi], "kb-sync-diff-removed");
+        oi++;
+      }
+    }
+    // Remaining added
+    while (ni < newLines.length) {
+      this.renderDiffLine(container, "+", newLines[ni], "kb-sync-diff-added");
+      ni++;
     }
   }
 

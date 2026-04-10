@@ -1321,9 +1321,11 @@
 
 /* ── History Preview Modal ──────────────────────────── */
 
+.modal-container .modal.kb-sync-history-modal,
 .kb-sync-history-modal {
-  max-width: 900px;
-  width: 90vw;
+  max-width: 95vw !important;
+  width: 1000px !important;
+  min-width: 600px;
 }
 
 .kb-sync-history-modal-header h3 {

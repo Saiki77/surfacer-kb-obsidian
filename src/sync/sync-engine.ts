@@ -442,8 +442,24 @@ export class SyncEngine {
         const remote = remoteFiles.get(path);
         const manifestEntry = this.manifest.getEntry(path);
         if (remote && manifestEntry && remote.lastModified !== manifestEntry.remoteLastModified) {
-          // BOTH sides changed — smart merge using base from manifest
+          // Timestamp differs — but check if content actually changed
           const remoteContent = (await s3.getObject(this.settings, path)).body;
+          // If remote content matches what we're pushing, no conflict
+          if (hashContent(remoteContent) === hashContent(content)) {
+            // Content is the same — just push (updates the timestamp in manifest)
+            await this.pushToS3(path, content);
+            this.manifest.setEntry(path, this.makeSyncedEntry(path, hashContent(content), new Date().toISOString()));
+            this.logActivity("push", path, "Uploaded to remote");
+            continue;
+          }
+          // If remote content matches manifest base, only local changed — safe to push
+          if (manifestEntry.remoteContentHash && hashContent(remoteContent) === manifestEntry.remoteContentHash) {
+            await this.pushToS3(path, content);
+            this.manifest.setEntry(path, this.makeSyncedEntry(path, hashContent(content), new Date().toISOString()));
+            this.logActivity("push", path, "Uploaded to remote");
+            continue;
+          }
+          // BOTH truly changed — smart merge
           // Reconstruct base from local content using manifest hash
           // If we don't have the exact base, use an empty string (treats everything as new)
           const baseContent = manifestEntry.baseContentHash === hashContent(content)

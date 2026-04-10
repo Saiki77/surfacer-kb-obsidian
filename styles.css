@@ -1322,8 +1322,8 @@
 /* ── History Preview Modal ──────────────────────────── */
 
 .kb-sync-history-modal {
-  max-width: 700px;
-  width: 80vw;
+  max-width: 900px;
+  width: 90vw;
 }
 
 .kb-sync-history-modal-header h3 {
@@ -1339,27 +1339,116 @@
 .kb-sync-history-modal-meta {
   color: var(--text-faint);
   font-size: 12px;
+  margin-bottom: 8px;
+}
+
+.kb-sync-history-modal-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.kb-sync-history-modal-tab {
+  padding: 6px 12px;
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 13px;
+  border-bottom: 2px solid transparent;
+}
+
+.kb-sync-history-modal-tab:hover {
+  color: var(--text-normal);
+}
+
+.kb-sync-history-modal-tab-active {
+  color: var(--text-normal);
+  border-bottom-color: var(--interactive-accent);
+}
+
+.kb-sync-history-modal-body {
+  max-height: 60vh;
+  overflow-y: auto;
   margin-bottom: 12px;
 }
 
-.kb-sync-history-modal-content {
-  width: 100%;
-  height: 350px;
-  font-family: var(--font-monospace);
-  font-size: 12px;
-  padding: 8px;
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 4px;
-  background: var(--background-secondary);
-  resize: vertical;
-  margin-bottom: 12px;
-  color: var(--text-normal);
+.kb-sync-history-modal-preview {
+  padding: 12px;
 }
 
 .kb-sync-history-modal-actions {
   display: flex;
   gap: 8px;
   justify-content: flex-end;
+}
+
+/* ── Diff View ──────────────────────────────────────── */
+
+.kb-sync-diff-view {
+  font-family: var(--font-monospace);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.kb-sync-diff-line {
+  display: flex;
+  padding: 1px 0;
+}
+
+.kb-sync-diff-gutter {
+  width: 32px;
+  text-align: right;
+  padding-right: 8px;
+  color: var(--text-faint);
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.kb-sync-diff-text {
+  flex: 1;
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 0 4px;
+}
+
+.kb-sync-diff-unchanged {
+  color: var(--text-muted);
+}
+
+.kb-sync-diff-added {
+  background: rgba(34, 197, 94, 0.15);
+}
+
+.kb-sync-diff-added .kb-sync-diff-gutter {
+  color: #22c55e;
+  font-weight: 600;
+}
+
+.kb-sync-diff-added .kb-sync-diff-text {
+  color: #22c55e;
+}
+
+.kb-sync-diff-removed {
+  background: rgba(239, 68, 68, 0.15);
+}
+
+.kb-sync-diff-removed .kb-sync-diff-gutter {
+  color: #ef4444;
+  font-weight: 600;
+}
+
+.kb-sync-diff-removed .kb-sync-diff-text {
+  color: #ef4444;
+  text-decoration: line-through;
+}
+
+.kb-sync-diff-same {
+  padding: 16px;
+  text-align: center;
+  color: var(--text-faint);
+  font-style: italic;
 }
 
 /* ── Connection Banner ───────────────────────────────── */

@@ -1944,7 +1944,7 @@ class HistoryPreviewModal extends Modal {
     this.entry = entry;
   }
 
-  onOpen(): void {
+  async onOpen(): Promise<void> {
     const { contentEl } = this;
     contentEl.addClass("kb-sync-history-modal");
 
@@ -1962,14 +1962,40 @@ class HistoryPreviewModal extends Modal {
       cls: "kb-sync-history-modal-meta",
     });
 
-    // Content preview
-    const preview = contentEl.createEl("textarea", {
-      cls: "kb-sync-history-modal-content",
-    });
-    preview.value = this.entry.content;
-    preview.readOnly = true;
+    // Tab bar: Diff view / Full content
+    const tabBar = contentEl.createDiv({ cls: "kb-sync-history-modal-tabs" });
+    const diffTab = tabBar.createEl("button", { text: "Changes", cls: "kb-sync-history-modal-tab kb-sync-history-modal-tab-active" });
+    const fullTab = tabBar.createEl("button", { text: "Full Document", cls: "kb-sync-history-modal-tab" });
 
-    // Restore button
+    const body = contentEl.createDiv({ cls: "kb-sync-history-modal-body" });
+
+    // Load current file content for diff
+    const syncFolder = this.plugin.settings.syncFolderPath;
+    const fullPath = `${syncFolder}/${this.entry.docPath}`;
+    const file = this.app.vault.getAbstractFileByPath(fullPath);
+    let currentContent = "";
+    if (file) {
+      try { currentContent = await this.app.vault.read(file as any); } catch {}
+    }
+
+    // Show diff view by default
+    this.renderDiff(body, this.entry.content, currentContent);
+
+    diffTab.addEventListener("click", () => {
+      diffTab.addClass("kb-sync-history-modal-tab-active");
+      fullTab.removeClass("kb-sync-history-modal-tab-active");
+      body.empty();
+      this.renderDiff(body, this.entry.content, currentContent);
+    });
+
+    fullTab.addEventListener("click", () => {
+      fullTab.addClass("kb-sync-history-modal-tab-active");
+      diffTab.removeClass("kb-sync-history-modal-tab-active");
+      body.empty();
+      this.renderFullContent(body);
+    });
+
+    // Actions
     const actions = contentEl.createDiv({ cls: "kb-sync-history-modal-actions" });
     const restoreBtn = actions.createEl("button", {
       text: "Restore this version",
@@ -1979,9 +2005,81 @@ class HistoryPreviewModal extends Modal {
       await this.restoreVersion();
       this.close();
     });
+    actions.createEl("button", { text: "Close" }).addEventListener("click", () => this.close());
+  }
 
-    const cancelBtn = actions.createEl("button", { text: "Cancel" });
-    cancelBtn.addEventListener("click", () => this.close());
+  private renderDiff(container: HTMLElement, oldContent: string, newContent: string): void {
+    const oldLines = oldContent.split("\n");
+    const newLines = newContent.split("\n");
+
+    const diffEl = container.createDiv({ cls: "kb-sync-diff-view" });
+
+    // Simple line-by-line diff
+    const maxLines = Math.max(oldLines.length, newLines.length);
+    let i = 0, j = 0;
+
+    while (i < oldLines.length || j < newLines.length) {
+      const oldLine = i < oldLines.length ? oldLines[i] : undefined;
+      const newLine = j < newLines.length ? newLines[j] : undefined;
+
+      if (oldLine === newLine) {
+        // Unchanged line
+        const lineEl = diffEl.createDiv({ cls: "kb-sync-diff-line kb-sync-diff-unchanged" });
+        lineEl.createSpan({ cls: "kb-sync-diff-gutter", text: String(i + 1) });
+        lineEl.createSpan({ cls: "kb-sync-diff-text", text: oldLine || "" });
+        i++; j++;
+      } else if (oldLine !== undefined && (newLine === undefined || !newLines.slice(j, j + 5).includes(oldLine))) {
+        // Removed line (in old, not in new nearby)
+        const lineEl = diffEl.createDiv({ cls: "kb-sync-diff-line kb-sync-diff-removed" });
+        lineEl.createSpan({ cls: "kb-sync-diff-gutter", text: "-" });
+        lineEl.createSpan({ cls: "kb-sync-diff-text", text: oldLine });
+        i++;
+      } else if (newLine !== undefined && (oldLine === undefined || !oldLines.slice(i, i + 5).includes(newLine))) {
+        // Added line (in new, not in old nearby)
+        const lineEl = diffEl.createDiv({ cls: "kb-sync-diff-line kb-sync-diff-added" });
+        lineEl.createSpan({ cls: "kb-sync-diff-gutter", text: "+" });
+        lineEl.createSpan({ cls: "kb-sync-diff-text", text: newLine });
+        j++;
+      } else {
+        // Both exist but different — show as remove + add
+        if (oldLine !== undefined) {
+          const lineEl = diffEl.createDiv({ cls: "kb-sync-diff-line kb-sync-diff-removed" });
+          lineEl.createSpan({ cls: "kb-sync-diff-gutter", text: "-" });
+          lineEl.createSpan({ cls: "kb-sync-diff-text", text: oldLine });
+          i++;
+        }
+        if (newLine !== undefined) {
+          const lineEl = diffEl.createDiv({ cls: "kb-sync-diff-line kb-sync-diff-added" });
+          lineEl.createSpan({ cls: "kb-sync-diff-gutter", text: "+" });
+          lineEl.createSpan({ cls: "kb-sync-diff-text", text: newLine });
+          j++;
+        }
+      }
+    }
+
+    if (oldContent === newContent) {
+      diffEl.createDiv({ cls: "kb-sync-diff-same", text: "No changes from current version" });
+    }
+  }
+
+  private renderFullContent(container: HTMLElement): void {
+    // Render markdown content using Obsidian's markdown renderer
+    const previewEl = container.createDiv({ cls: "kb-sync-history-modal-preview markdown-rendered" });
+    try {
+      // Use Obsidian's MarkdownRenderer for styled preview
+      const { MarkdownRenderer, Component } = require("obsidian");
+      const component = new Component();
+      // Strip frontmatter before rendering
+      let content = this.entry.content;
+      if (content.startsWith("---")) {
+        const endIdx = content.indexOf("---", 3);
+        if (endIdx > 0) content = content.slice(endIdx + 3).trim();
+      }
+      MarkdownRenderer.render(this.app, content, previewEl, this.entry.docPath, component);
+    } catch {
+      // Fallback: plain text
+      previewEl.createEl("pre", { text: this.entry.content });
+    }
   }
 
   onClose(): void {

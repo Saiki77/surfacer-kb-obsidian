@@ -106,10 +106,13 @@ export class CollabSession {
     this.transport.sendUpdate(this.docPath, fullState);
 
     this.ydocUpdateHandler = (update: Uint8Array, origin: any) => {
-      if (origin === "remote" || origin === "local-to-yjs") return;
+      // Skip remote updates (already came from peer) and isSyncing (CM6 resync echo)
+      if (origin === "remote" || this.isSyncing) return;
+
+      // This fires for ALL local changes (including origin="local-to-yjs")
       this.snapshotDirty = true;
 
-      // Fix 4: Queue updates if WebSocket is down
+      // Queue updates if WebSocket is down
       if (!this.transport.connected) {
         this.offlineQueue.push(update);
         return;

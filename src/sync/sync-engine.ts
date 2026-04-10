@@ -15,6 +15,7 @@ import {
   metadataToS3Headers,
 } from "../utils/metadata";
 import type { ActivityEntry } from "../ui/sidebar-view";
+import { threeWayMerge } from "./three-way-merge";
 import * as historyManager from "../collab/history-manager";
 
 export type SyncStatus =
@@ -437,10 +438,45 @@ export class SyncEngine {
         const remote = remoteFiles.get(path);
         const manifestEntry = this.manifest.getEntry(path);
         if (remote && manifestEntry && remote.lastModified !== manifestEntry.remoteLastModified) {
-          // BOTH sides changed — don't push, back up local instead
+          // BOTH sides changed — smart merge using base from manifest
+          const remoteContent = (await s3.getObject(this.settings, path)).body;
+          // Reconstruct base from local content using manifest hash
+          // If we don't have the exact base, use an empty string (treats everything as new)
+          const baseContent = manifestEntry.baseContentHash === hashContent(content)
+            ? content // Local didn't actually change from base
+            : manifestEntry.baseContentHash === hashContent(remoteContent)
+              ? remoteContent // Remote didn't actually change from base
+              : ""; // Both truly changed, no base available — will produce conflict markers
+
+          // Try to find a real base from history
+          let realBase = baseContent;
+          if (realBase === "") {
+            // Use the content that matches the base hash as base
+            // If neither matches, we just merge with conflict markers
+            realBase = "";
+          }
+
+          const mergeResult = threeWayMerge(realBase, content, remoteContent);
+
+          // Always backup both versions before merging
           await this.backupFile(path, content, "local");
-          this.logActivity("conflict", path, "Both changed — local backed up, remote preserved");
-          new Notice(`Conflict: ${path.split("/").pop()} — local version backed up`);
+          await this.backupFile(path, remoteContent, "remote");
+
+          if (mergeResult.success) {
+            // Clean merge — push the merged content
+            await this.pushToS3(path, mergeResult.content);
+            await this.writeLocalFile(path, mergeResult.content);
+            this.manifest.setEntry(path, this.makeSyncedEntry(path, hashContent(mergeResult.content), new Date().toISOString()));
+            this.logActivity("push", path, "Auto-merged local + remote changes");
+            new Notice(`Merged: ${path.split("/").pop()}`);
+          } else {
+            // Conflicts — push merged content with conflict markers, let user resolve
+            await this.pushToS3(path, mergeResult.content);
+            await this.writeLocalFile(path, mergeResult.content);
+            this.manifest.setEntry(path, this.makeSyncedEntry(path, hashContent(mergeResult.content), new Date().toISOString()));
+            this.logActivity("conflict", path, `Auto-merged with ${mergeResult.conflicts} conflict(s)`);
+            new Notice(`Merged with ${mergeResult.conflicts} conflict(s): ${path.split("/").pop()}`);
+          }
           continue;
         }
 
@@ -598,18 +634,38 @@ export class SyncEngine {
       return;
     }
 
-    // Both modified — true conflict
-    this._conflictCount++;
-    const result = await resolveConflict(
-      this.app,
-      this.settings,
-      path,
-      localContent,
-      remoteContent
-    );
+    // Both modified — try smart merge first
+    await this.backupFile(path, localContent, "local");
+    await this.backupFile(path, remoteContent, "remote");
 
-    // Write winner to both sides
-    await this.writeLocalFile(path, result.content);
+    // Try three-way merge (base = empty string since we may not have the original)
+    const mergeResult = threeWayMerge("", localContent, remoteContent);
+
+    let finalContent: string;
+    if (mergeResult.success) {
+      finalContent = mergeResult.content;
+      this.logActivity("conflict", path, "Auto-merged successfully");
+      new Notice(`Auto-merged: ${path.split("/").pop()}`);
+    } else if (mergeResult.conflicts <= 3) {
+      // Few conflicts — use merged content with markers, let user clean up
+      finalContent = mergeResult.content;
+      this._conflictCount++;
+      this.logActivity("conflict", path, `Merged with ${mergeResult.conflicts} conflict(s)`);
+      new Notice(`Merged with conflicts: ${path.split("/").pop()}`);
+    } else {
+      // Too many conflicts — fall back to manual resolution
+      this._conflictCount++;
+      const result = await resolveConflict(
+        this.app,
+        this.settings,
+        path,
+        localContent,
+        remoteContent
+      );
+      finalContent = result.content;
+    }
+
+    await this.writeLocalFile(path, finalContent);
     const { metadata } = parseFrontmatter(result.content);
     await s3.putObject(
       this.settings,

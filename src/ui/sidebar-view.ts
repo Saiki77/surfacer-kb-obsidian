@@ -106,19 +106,44 @@ export class KBSyncSidebarView extends ItemView {
     return "kb-sync";
   }
 
+  private historyRefreshInterval: number | null = null;
+  private lastHistoryDoc: string | null = null;
+
   async onOpen(): Promise<void> {
     this.render();
     await this.refreshRemoteFiles();
 
-    // Re-render team tab instantly when user switches active file
+    // Re-render on file switch for team and history tabs
     this.registerEvent(
       this.app.workspace.on("active-leaf-change", () => {
         if (this.activeTab === "team") this.render();
+        if (this.activeTab === "history") {
+          // Check if the active file changed
+          const activeFile = this.app.workspace.getActiveFile();
+          const syncFolder = this.plugin.settings.syncFolderPath;
+          const docPath = activeFile?.path?.startsWith(syncFolder + "/")
+            ? activeFile.path.replace(syncFolder + "/", "")
+            : null;
+          if (docPath !== this.lastHistoryDoc) {
+            this.lastHistoryDoc = docPath;
+            this.refreshHistory();
+          }
+        }
       })
     );
+
+    // Auto-refresh history every 10s when tab is active
+    this.historyRefreshInterval = window.setInterval(() => {
+      if (this.activeTab === "history") {
+        this.refreshHistory();
+      }
+    }, 10000);
   }
 
   async onClose(): Promise<void> {
+    if (this.historyRefreshInterval !== null) {
+      window.clearInterval(this.historyRefreshInterval);
+    }
     this.contentEl.empty();
   }
 

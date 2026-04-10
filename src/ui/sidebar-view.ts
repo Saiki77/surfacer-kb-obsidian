@@ -2018,39 +2018,64 @@ class HistoryPreviewModal extends Modal {
     const newLines = newContent.split("\n");
     const diffEl = container.createDiv({ cls: "kb-sync-diff-view" });
 
-    // Match lines using greedy LCS
-    const matched = this.matchLines(oldLines, newLines);
+    // Find common prefix lines
+    let prefixLen = 0;
+    while (prefixLen < oldLines.length && prefixLen < newLines.length && oldLines[prefixLen] === newLines[prefixLen]) {
+      prefixLen++;
+    }
 
-    let oi = 0, ni = 0;
-    for (const m of matched) {
-      // Removed lines before this match
-      while (oi < m.oldIdx) {
-        this.renderDiffLine(diffEl, "-", oldLines[oi], "kb-sync-diff-removed");
-        oi++;
+    // Find common suffix lines
+    let suffixLen = 0;
+    while (
+      suffixLen < (oldLines.length - prefixLen) &&
+      suffixLen < (newLines.length - prefixLen) &&
+      oldLines[oldLines.length - 1 - suffixLen] === newLines[newLines.length - 1 - suffixLen]
+    ) {
+      suffixLen++;
+    }
+
+    const oldChanged = oldLines.slice(prefixLen, oldLines.length - suffixLen);
+    const newChanged = newLines.slice(prefixLen, newLines.length - suffixLen);
+
+    // Render common prefix (collapsed if long)
+    if (prefixLen > 0) {
+      const showPrefix = prefixLen <= 3 ? prefixLen : 3;
+      if (prefixLen > 3) {
+        diffEl.createDiv({ cls: "kb-sync-diff-collapse", text: `... ${prefixLen - 3} unchanged lines ...` });
       }
-      // Added lines before this match
-      while (ni < m.newIdx) {
-        this.renderDiffLine(diffEl, "+", newLines[ni], "kb-sync-diff-added");
-        ni++;
+      for (let i = Math.max(0, prefixLen - showPrefix); i < prefixLen; i++) {
+        this.renderDiffLine(diffEl, String(i + 1), oldLines[i], "kb-sync-diff-unchanged");
       }
-      // Matched line
-      if (oldLines[oi] === newLines[ni]) {
-        this.renderDiffLine(diffEl, String(oi + 1), oldLines[oi], "kb-sync-diff-unchanged");
+    }
+
+    // Render changed region — pair up old/new lines for word-level diff
+    const pairCount = Math.min(oldChanged.length, newChanged.length);
+    for (let i = 0; i < pairCount; i++) {
+      if (oldChanged[i] === newChanged[i]) {
+        this.renderDiffLine(diffEl, String(prefixLen + i + 1), oldChanged[i], "kb-sync-diff-unchanged");
       } else {
-        // Same position match but content differs: show word-level diff
-        this.renderModifiedLine(diffEl, oldLines[oi], newLines[ni]);
+        this.renderModifiedLine(diffEl, oldChanged[i], newChanged[i]);
       }
-      oi++; ni++;
     }
-    // Remaining removed
-    while (oi < oldLines.length) {
-      this.renderDiffLine(diffEl, "-", oldLines[oi], "kb-sync-diff-removed");
-      oi++;
+    // Extra removed lines
+    for (let i = pairCount; i < oldChanged.length; i++) {
+      this.renderDiffLine(diffEl, "-", oldChanged[i], "kb-sync-diff-removed");
     }
-    // Remaining added
-    while (ni < newLines.length) {
-      this.renderDiffLine(diffEl, "+", newLines[ni], "kb-sync-diff-added");
-      ni++;
+    // Extra added lines
+    for (let i = pairCount; i < newChanged.length; i++) {
+      this.renderDiffLine(diffEl, "+", newChanged[i], "kb-sync-diff-added");
+    }
+
+    // Render common suffix (collapsed if long)
+    if (suffixLen > 0) {
+      const showSuffix = suffixLen <= 3 ? suffixLen : 3;
+      for (let i = 0; i < showSuffix; i++) {
+        const idx = oldLines.length - suffixLen + i;
+        this.renderDiffLine(diffEl, String(idx + 1), oldLines[idx], "kb-sync-diff-unchanged");
+      }
+      if (suffixLen > 3) {
+        diffEl.createDiv({ cls: "kb-sync-diff-collapse", text: `... ${suffixLen - 3} unchanged lines ...` });
+      }
     }
   }
 
@@ -2107,23 +2132,6 @@ class HistoryPreviewModal extends Modal {
     }
   }
 
-  /** Greedy LCS matching for lines */
-  private matchLines(oldLines: string[], newLines: string[]): { oldIdx: number; newIdx: number }[] {
-    const matches: { oldIdx: number; newIdx: number }[] = [];
-    const newUsed = new Set<number>();
-
-    for (let i = 0; i < oldLines.length; i++) {
-      for (let j = 0; j < newLines.length; j++) {
-        if (newUsed.has(j)) continue;
-        if (oldLines[i] === newLines[j]) {
-          matches.push({ oldIdx: i, newIdx: j });
-          newUsed.add(j);
-          break;
-        }
-      }
-    }
-    return matches;
-  }
 
   private renderFullContent(container: HTMLElement): void {
     // Render markdown content using Obsidian's markdown renderer

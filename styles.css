@@ -1446,6 +1446,16 @@
   text-decoration: line-through;
 }
 
+.kb-sync-diff-collapse {
+  padding: 4px 40px;
+  font-size: 11px;
+  color: var(--text-faint);
+  font-style: italic;
+  background: var(--background-secondary);
+  border-top: 1px solid var(--background-modifier-border);
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
 .kb-sync-diff-word-highlight {
   background: rgba(255, 255, 255, 0.2);
   border-radius: 2px;

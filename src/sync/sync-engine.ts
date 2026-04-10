@@ -94,6 +94,19 @@ export class SyncEngine {
     return this.collabChecker ? this.collabChecker(path) : false;
   }
 
+  /**
+   * Check if a file is currently open in any editor tab.
+   * Open files should NEVER be silently overwritten by pull.
+   */
+  private isFileOpen(relativePath: string): boolean {
+    const fullPath = this.vaultPath(relativePath);
+    for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
+      const file = (leaf.view as any)?.file;
+      if (file?.path === fullPath) return true;
+    }
+    return false;
+  }
+
   private setStatus(status: SyncStatus): void {
     this._status = status;
     this.onStatusChange(status, this._conflictCount);
@@ -279,7 +292,12 @@ export class SyncEngine {
 
       // Pull: remote changed, local didn't
       for (const path of plan.pull) {
-        if (this.isInCollabMode(path)) continue; // Handled by collab session
+        if (this.isInCollabMode(path)) continue;
+        // NEVER overwrite a file that's open in an editor
+        if (this.isFileOpen(path)) {
+          this.logActivity("pull", path, "Skipped (file open in editor)");
+          continue;
+        }
         const { body } = await s3.getObject(this.settings, path);
         await this.writeLocalFile(path, body);
         const remote = remoteFiles.get(path)!;
@@ -305,6 +323,10 @@ export class SyncEngine {
 
       // Deleted from remote, local unchanged
       for (const path of plan.deletedRemote) {
+        if (this.isFileOpen(path)) {
+          this.logActivity("delete", path, "Skipped delete (file open)");
+          continue;
+        }
         await this.deleteLocalFile(path);
         this.manifest.removeEntry(path);
         this.logActivity("delete", path, "Deleted (removed from remote)");
@@ -313,7 +335,11 @@ export class SyncEngine {
       // Conflicts
       this._conflictCount = 0;
       for (const path of plan.conflicts) {
-        if (this.isInCollabMode(path)) continue; // CRDT handles merging
+        if (this.isInCollabMode(path)) continue;
+        if (this.isFileOpen(path)) {
+          this.logActivity("conflict", path, "Skipped (file open, local preserved)");
+          continue;
+        }
         await this.handleConflict(path, localFiles, remoteFiles);
       }
 
